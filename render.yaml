@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: jururu-discord-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python jrr.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
