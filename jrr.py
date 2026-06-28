@@ -10,12 +10,12 @@ env_path = os.path.join(current_dir, '.env')
 load_dotenv(env_path)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# 완전 무료 & 하루 제한 없는 Groq API 클라이언트 설정
+# 깃허브 마켓플레이스 무료 AI API 설정 (400 에러 및 횟수 억까 없음)
 ai_client = openai.OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=GROQ_API_KEY
+    base_url="https://models.inference.ai.azure.com",
+    api_key=GITHUB_TOKEN
 )
 
 intents = discord.Intents.default()
@@ -76,9 +76,9 @@ async def on_message(message):
             
             messages.append({"role": "user", "content": message.content})
 
-            # [수정 완료] 현재 완벽 작동하는 공식 70B 모델 ID
+            # 깃허브 모델스에서 무료로 제공하는 고성능 대형 모델 ID 적용
             chat_completion = ai_client.chat.completions.create(
-                model="llama3-70b-8192",
+                model="meta-llama-3.1-70b-instruct",
                 temperature=0.85,
                 messages=messages
             )
@@ -100,12 +100,9 @@ async def on_message(message):
             else:
                 await message.channel.send("어라라? 방금 디코 억까 당함 ㅋㅋㅋ 렉 걸려서 메시지 날아갔잔슴;; 다시 보내봐!")
 
-    except openai.RateLimitError as e:
-        print(f"[Groq RateLimit] 분당 제한 도달: {e}")
-        await message.channel.send("⚠️ 아잇, 지금 잠시 렉 걸렸잔슴! 10초만 있다가 다시 말 걸어줘!")
-        
     except Exception as e:
-        print(f"일반 에러 로그: {e}")
+        print(f"에러 로그: {e}")
+        await message.channel.send("⚠️ 아잇, 지금 잠시 렉 걸렸잔슴! 다시 한번만 말 걸어줘!")
 
 async def handle_censorship(message):
     try:
