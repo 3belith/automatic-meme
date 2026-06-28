@@ -76,9 +76,9 @@ async def on_message(message):
             
             messages.append({"role": "user", "content": message.content})
 
-            # 깃허브 모델스에서 무료로 제공하는 고성능 대형 모델 ID 적용
+            # [최종 교정] GitHub Models 공식 인식 대소문자 모델 ID
             chat_completion = ai_client.chat.completions.create(
-                model="meta-llama-3.1-70b-instruct",
+                model="Llama-3.3-70b-Instruct",  # 3.3 버전 대형 모델 명칭이야!
                 temperature=0.85,
                 messages=messages
             )
