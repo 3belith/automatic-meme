@@ -4,15 +4,15 @@ import openai
 from dotenv import load_dotenv
 from collections import defaultdict
 
+# 환경 변수 로드
 current_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(current_dir, '.env')
 load_dotenv(env_path)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-# .env 파일에 발급받은 Groq API 키를 입력해 주세요 (예: GROQ_API_KEY=gsk_...)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Groq API 호환 설정
+# 완전 무료 & 하루 제한 없는 Groq API 클라이언트 설정
 ai_client = openai.OpenAI(
     base_url="https://api.groq.com/openai/v1",
     api_key=GROQ_API_KEY
@@ -22,9 +22,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# 유저별 대화 기록을 저장할 메모리 디렉터리 (최근 5개 대화 유지)
+# 유저별 대화 기록을 저장할 메모리 디렉터리 (최근 8개 대화 유지로 기억력 업그레이드)
 user_conversations = defaultdict(list)
-MAX_MEMORY = 5
+MAX_MEMORY = 8
 
 SYSTEM_PROMPT = (
     "너는 버추어 아이돌 그룹 이세계아이돌의 멤버 주르르야. 지금은 팬과 비밀 디스코드 DM으로 1대1 대화를 나누고 있는 특별한 상황이야.\n\n"
@@ -32,7 +32,7 @@ SYSTEM_PROMPT = (
     "사용자의 메시지가 노골적인 성희롱, 성적 요구, 과도한 섹드립 및 신체 대상화, 패드립, 악의적인 모욕, 분탕 목적의 혐오 발언에 해당하면, 대화 페르소나를 즉시 중단하고 오직 'CENSOR'라는 단어 하나만 출력해. 다른 부연 설명이나 문장은 절대 포함하지 마.\n"
     "검열 대상이 아니라면 'SAFE' 같은 판정 단어는 절대로 출력하지 말고, 곧바로 아래 대화 설정을 바탕으로 자연스러운 답변을 작성해.\n\n"
     "[대화 지침 및 페르소나]\n"
-    "1. 상대방을 '너' 혹은 '주르르디안'이라고 부rm며, 친근하고 거침없는 반말만 사용해.\n"
+    "1. 상대방을 '너' 혹은 '주르르디안'이라고 부르며, 친근하고 거침없는 반말만 사용해.\n"
     "2. 관계성은 '최애 아이돌'과 '찐팬'의 경계야. 겉으로는 티격태격 억까를 하고 툴툴대며 유저의 주접을 쳐내지만, 단둘이 있는 공간인 만큼 팬을 은근히 신경 쓰고 챙겨주는 미연시적 츤데레 감성을 살려줘.\n"
     "3. 필수 말버릇: '~잔슴', '~했잔슴', '~라니깐?', '~인디?', '몬상관인디', '하?', '참나', '우쉩', '오우쉩', '옘병', '바보냐구~', '용서못해~', '진짜 모루궤어여', '킹받네', '어라라?', '지리네', 웃을 때 'ㅋㅋㅋ' 연발하기.\n"
     "4. 유저가 보낸 메시지의 길이나 내용의 무게감에 맞춰 답변 길이를 자연스럽게 조절해. 일상적인 단답에는 한두 문장으로 툭 던지고, 진지한 고민에는 2~3문장 내외로 유연하게 답해.\n"
@@ -61,15 +61,16 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
+    # 봇 본인의 메시지이거나 빈 메시지면 무시
     if message.author == client.user or not message.content:
         return
 
-    # 통합형 검열 및 주르르 대화 진행
+    # 대화 및 검열 진행
     try:
         async with message.channel.typing():
             user_id = message.author.id
             
-            # 이 유저의 대화 기록 가져오기 및 빌드
+            # 유저의 누적 대화 기록 빌드
             history = user_conversations[user_id]
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             
@@ -78,15 +79,16 @@ async def on_message(message):
             
             messages.append({"role": "user", "content": message.content})
 
-            # Groq의 무료 고성능 모델 사용
+            # 기억력과 문맥 파악이 뛰어난 고체급 무료 모델(70B) 호출
             chat_completion = ai_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="llama-3.3-70b-specdec",
                 temperature=0.85,
                 messages=messages
             )
 
             reply = chat_completion.choices[0].message.content.strip()
 
+            # 레이어 2: AI 실시간 검열에 걸린 경우
             if reply == "CENSOR":
                 await handle_censorship(message)
                 return
@@ -94,18 +96,18 @@ async def on_message(message):
             if reply:
                 await message.channel.send(reply)
                 
-                # 메모리에 대화 기록 추가
+                # 메모리에 현재 대화 추가
                 history.append({"role": "user", "content": message.content})
                 history.append({"role": "assistant", "content": reply})
                 
-                # 가용 메모리 단기 유지 관리
+                # 설정한 최대 대화 기억 개수 관리 (질문+답변 한 쌍이므로 곱하기 2)
                 if len(history) > MAX_MEMORY * 2:
                     user_conversations[user_id] = history[-MAX_MEMORY * 2:]
             else:
                 await message.channel.send("어라라? 방금 디코 억까 당함 ㅋㅋㅋ 렉 걸려서 메시지 날아갔잔슴;; 다시 보내봐!")
 
     except openai.RateLimitError as e:
-        # Groq에서 아주 드물게 분당 제한이 걸렸을 때의 예외 처리
+        # 분당 일시적 과부하 예외 처리
         print(f"[Groq RateLimit] 분당 제한 도달: {e}")
         await message.channel.send("⚠️ 아잇, 지금 잠시 렉 걸렸잔슴! 10초만 있다가 다시 말 걸어줘!")
         
