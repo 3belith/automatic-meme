@@ -22,7 +22,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# 유저별 대화 기록을 저장할 메모리 디렉터리 (최근 8개 대화 유지로 기억력 업그레이드)
+# 유저별 대화 기록을 저장할 메모리 디렉터리 (최근 8개 대화 유지)
 user_conversations = defaultdict(list)
 MAX_MEMORY = 8
 
@@ -61,16 +61,13 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    # 봇 본인의 메시지이거나 빈 메시지면 무시
     if message.author == client.user or not message.content:
         return
 
-    # 대화 및 검열 진행
     try:
         async with message.channel.typing():
             user_id = message.author.id
             
-            # 유저의 누적 대화 기록 빌드
             history = user_conversations[user_id]
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             
@@ -79,16 +76,15 @@ async def on_message(message):
             
             messages.append({"role": "user", "content": message.content})
 
-            # 기억력과 문맥 파악이 뛰어난 고체급 무료 모델(70B) 호출
+            # [수정 완료] 현재 완벽 작동하는 공식 70B 모델 ID
             chat_completion = ai_client.chat.completions.create(
-                model="llama-3.3-70b-specdec",
+                model="llama3-70b-8192",
                 temperature=0.85,
                 messages=messages
             )
 
             reply = chat_completion.choices[0].message.content.strip()
 
-            # 레이어 2: AI 실시간 검열에 걸린 경우
             if reply == "CENSOR":
                 await handle_censorship(message)
                 return
@@ -96,18 +92,15 @@ async def on_message(message):
             if reply:
                 await message.channel.send(reply)
                 
-                # 메모리에 현재 대화 추가
                 history.append({"role": "user", "content": message.content})
                 history.append({"role": "assistant", "content": reply})
                 
-                # 설정한 최대 대화 기억 개수 관리 (질문+답변 한 쌍이므로 곱하기 2)
                 if len(history) > MAX_MEMORY * 2:
                     user_conversations[user_id] = history[-MAX_MEMORY * 2:]
             else:
                 await message.channel.send("어라라? 방금 디코 억까 당함 ㅋㅋㅋ 렉 걸려서 메시지 날아갔잔슴;; 다시 보내봐!")
 
     except openai.RateLimitError as e:
-        # 분당 일시적 과부하 예외 처리
         print(f"[Groq RateLimit] 분당 제한 도달: {e}")
         await message.channel.send("⚠️ 아잇, 지금 잠시 렉 걸렸잔슴! 10초만 있다가 다시 말 걸어줘!")
         
