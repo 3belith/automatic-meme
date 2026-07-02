@@ -125,13 +125,17 @@ JRR_SYSTEM_PROMPT = (
 )
 
 async def call_gemini_api(contents):
-    """분당 15번 제한을 철저히 우회하는 초경량 API 호출 모듈"""
+    """분당 15번 제한을 철저히 우회하고 무한 대기 버그를 방지한 API 호출 모듈"""
     global LAST_API_CALL_TIME
-    async with api_semaphore:
-        time_since_last_call = time.time() - LAST_API_CALL_TIME
-        if time_since_last_call < 4.0:
-            await asyncio.sleep(4.0 - time_since_last_call)
+    
+    # 1차적으로 이전 호출과의 간격 체크
+    time_since_last_call = time.time() - LAST_API_CALL_TIME
+    if time_since_last_call < 4.0:
+        await asyncio.sleep(4.0 - time_since_last_call)
         
+    # try ... finally 구문으로 에러가 나도 무조건 세마포어 해제 보장
+    await api_semaphore.acquire()
+    try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         payload = {
@@ -139,7 +143,7 @@ async def call_gemini_api(contents):
             "systemInstruction": {"parts": [{"text": JRR_SYSTEM_PROMPT}]},
             "generationConfig": {
                 "temperature": 0.85,
-                "maxOutputTokens": 300  # ★ 150에서 300으로 2배 상향 완료! (글자 끊김 방지)
+                "maxOutputTokens": 800
             }
         }
         
@@ -153,6 +157,12 @@ async def call_gemini_api(contents):
                 elif response.status == 429:
                     return "RATE_LIMIT_ERROR"
                 return ""
+    except Exception as e:
+        print(f"API 내부 에러 발생: {e}")
+        return ""
+    finally:
+        # ★ 무슨 일이 있어도 열쇠를 반납해서 다음 대화가 막히지 않게 함!
+        api_semaphore.release()
 
 @client.event
 async def on_ready():
