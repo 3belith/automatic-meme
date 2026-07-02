@@ -37,7 +37,7 @@ user_buffer_tasks = {}
 
 COOLDOWN_SECONDS = 3.0
 TIMEOUT_LIMIT = 5.0
-WAIT_DELAY = 1.2
+WAIT_DELAY = 1.8
 
 # 허용 문자 및 한자 차단 정규식
 ALLOWED_CHAR_PATTERN = re.compile(r'[ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z0-9\s!@#$%^&*()_+\-=\[\] {};\':",./<>?\\\|~`\U00010000-\U0010FFFF]')
