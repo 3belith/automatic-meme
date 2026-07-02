@@ -267,21 +267,10 @@ async def process_delayed_message(user_id, message):
                 try: await message.delete()
                 except: pass
 
-            # 디코 메세지 실시간 연달아 끊어치기 가공
-            raw_lines = [line.strip() for line in reply.split('\n') if line.strip()]
-            final_messages = []
-            current_chunk = ""
-
-            for line in raw_lines:
-                if current_chunk:
-                    if len(current_chunk) < 25: current_chunk += " " + line
-                    else:
-                        final_messages.append(current_chunk)
-                        current_chunk = line
-                else: current_chunk = line
-            if current_chunk: final_messages.append(current_chunk)
-
-            # ★ 기존 :3 에서 :5 로 넉넉하게 상향 완료! (장문 줄바꿈 삭제 방지)
+            # 깔끔하게 줄바꿈 기준으로 쪼개고 빈 줄만 제거해서 전송
+            final_messages = [line.strip() for line in reply.split('\n') if line.strip()]
+            
+            # 최대 5줄까지 안전하게 끊어 치기 전송
             final_messages = final_messages[:5]
             for idx, msg_content in enumerate(final_messages):
                 await message.channel.send(msg_content)
