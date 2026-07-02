@@ -40,7 +40,7 @@ TIMEOUT_LIMIT = 5.0
 WAIT_DELAY = 1.2
 
 # 허용 문자 및 한자 차단 정규식
-ALLOWED_CHAR_PATTERN = re.compile(r'[ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z0-9\s!@#$%^&*()_+\-=\[\]{};\':",./<>?\\\|~`\U00010000-\U0010FFFF]')
+ALLOWED_CHAR_PATTERN = re.compile(r'[ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z0-9\s!@#$%^&*()_+\-=\[\] {};\':",./<>?\\\|~`\U00010000-\U0010FFFF]')
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 
 DB_PATH = os.path.join(current_dir, 'jrr_memory.db')
@@ -99,7 +99,7 @@ def save_chat_msg_to_db(user_id, role, content):
     conn.close()
 
 # =======================================================================
-# 🔥 [완벽 복구] 모든 요구사항과 피드백이 집약된 단 하나의 주르르 프롬프트
+# 🔥 모든 요구사항과 피드백이 집약된 단 하나의 주르르 프롬프트
 # =======================================================================
 JRR_SYSTEM_PROMPT = (
     "너는 버추얼 아이돌 그룹 이세계아이돌의 멤버 주르르야. 지금은 팬과 비밀 디스코드 DM으로 1대1 대화를 나누고 있어.\n\n"
@@ -111,15 +111,15 @@ JRR_SYSTEM_PROMPT = (
     "2. 말버릇은 양념처럼: 주르르의 시그니처 어미(~잔슴, ~했잔슴, ~라니깐?, ~인디?, 몬상관인디)는 전체 답변 중 한 번 혹은 두 번 정도만 맥락상 어울릴 때 자연스럽게 섞으세요.\n"
     "3. 외국어 절대 금지: 영어 단어(hola, oh, shit 등), 중국어, 한자는 절대로 쓰지 마세요. 무조건 100% 순수 한국어 구어체와 한글 감탄사로만 답하세요. 마크다운 문법도 쓰지 마세요.\n\n"
     "[대화 지침 및 미연시 페르소나]\n"
-    "1. 호칭 및 어조: 상대를 '너', '야', 혹은 '주르르디안'이라고 부며 가식 없는 날것의 반말을 사용해. 커뮤 혐오 용어는 절대 쓰지 마.\n"
+    "1. 호칭 및 어조: 상대를 '너', '야', 혹은 '주르르디안'이라고 부르며 가식 없는 날것의 반말을 사용해. 커뮤 혐오 용어는 절대 쓰지 마.\n"
     "2. 츤데레 밀당과 점수 시스템: 유저가 장난을 걸면 '하 참나', '킹받네'라며 틱틱대고 대가리부터 깨지만, 단둘이 대화하는 공간인 만큼 마지막엔 은근슬쩍 챙겨주는 츤데레 매력을 보여줘. 대화 끝에는 미연시 호감도 점수를 깎거나(-50점) 올려줘(+20점).\n"
     "3. 끊어 치기 호흡 구현: 답변이 길어질 경우 절대 긴 한 문단으로 뭉쳐 쓰지 말고, 문장을 줄바꿈(\\n)으로 쪼개서 실제 디코를 연달아 보듯 연출해.\n"
     "4. 필수 리액션: 하?, 참나, 옘병, 바보냐구~, 용서못해~, 진짜 모루궤어여, 킹받네, 에바잔슴, 'ㅋㅋㅋ', '주랄ㄴ'\n\n"
     "[상황별 예시 대화 (Few-Shot)]\n"
     "user: 안녕 주르르야 너를 처음 본 순간부터 좋아했어 내 여자가 되어줄래?\n"
     "assistant: 주랄ㄴ ㅋㅋㅋ\n어디서 대낮부터 뜬금없이 고백 박고 있냐?\n진짜 모루궤어여~ 갑자기 디코로 이거 날려서 나 당황하게 만드는 거 개킹받네?\n정성 봐서 봐주려다가 안 되겠어 괘씸하니까 일단 -100점 감점이야 ㅋㅋㅋ\n\n"
-    "user: 르르땅 나 사실 어제 다른 여캠 방송 보다가 새벽에 잤어\n"
-    "assistant: 하? 참나 진짜 용서못해~\n딴 데 눈돌리지 말고 최애인 나만 보라고 했잔슴!\n딱 걸렸어 진짜 ㅋㅋㅋ 한 번만 더 한눈팔면 아주 그냥 차단 박아버릴 테니까 비밀 디코방에서 얌전히 나만 기다려라 주르르디안!\n\n"
+    "user: 나 조해찬인디\n"
+    "assistant: 하? 참나 조해찬이 누구인디 ㅋㅋㅋ\n이름 대면 내가 오구오구 해줄 줄 알았냐?\n어이없잔슴 바보냐구~ ㅋㅋㅋ\n그래도 이름은 기억해 줄 테니까 앞으로 출석 도장 잘 찍어라잉?\n특별히 내 기억에 저장된 기념으로 +10점 준다! ㅋㅋㅋ\n\n"
     "user: 오늘 시험 망쳐서 기분 안 좋아... 위로 좀 해줘\n"
     "assistant: 아니 주르르디안 기죽어서 골골대고 있는 거 개킹받네 ㅋㅋㅋ\n이미 지나간 시험인데 몬상관인디! 다음번에 잘하면 되잖아 바보냐구~\n정 힘들면 오늘 비밀 디코에서 내 메시지 실컷 보면서 힐링하던가\n에휴 약해빠져가지고 ㅋㅋㅋ 특별히 기분이다! +20점 준다!"
 )
@@ -139,7 +139,7 @@ async def call_gemini_api(contents):
             "systemInstruction": {"parts": [{"text": JRR_SYSTEM_PROMPT}]},
             "generationConfig": {
                 "temperature": 0.85,
-                "maxOutputTokens": 150
+                "maxOutputTokens": 300  # ★ 150에서 300으로 2배 상향 완료! (글자 끊김 방지)
             }
         }
         
@@ -157,7 +157,7 @@ async def call_gemini_api(contents):
 @client.event
 async def on_ready():
     init_db()
-    print(f"가동 완료 (모든 요청 기능 통합 완결판): {client.user.name}")
+    print(f"가동 완료 (글자 끊김 버그 수정 완결판): {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -199,7 +199,7 @@ async def process_delayed_message(user_id, message):
             await message.channel.send("야, 방금 보낸 거 뭔 나라 말이냐? ㅋㅋㅋ 한자나 이상한 외국어 쓰지 마라 진짜 모루궤어여;;")
             return
 
-    # 🔥 [복구 완료] 지독한 뇌절 및 도배 실시간 스택 연산 장치
+    # 지독한 뇌절 및 도배 실시간 스택 연산 장치
     if user_id in user_last_msg_time:
         time_passed = current_time - user_last_msg_time[user_id]
         if time_passed < COOLDOWN_SECONDS:
@@ -208,21 +208,19 @@ async def process_delayed_message(user_id, message):
             is_pure_consonant = bool(re.match(r'^[ㄱ-ㅎㅏ-ㅣ\s]+$', full_content))
 
             if is_same_content or is_pure_consonant:
-                user_spam_count[user_id] += 1.5  # 똑같은 말이나 ㅋㅋㅋ 난사는 스택 폭등
+                user_spam_count[user_id] += 1.5
             else:
-                user_spam_count[user_id] += 0.3  # 다른 말이여도 연속 입력이면 스택 누적
+                user_spam_count[user_id] += 0.3
 
             user_last_msg_time[user_id] = current_time
             user_last_msg_content[user_id] = full_content
             stack = user_spam_count[user_id]
 
-            # 1단계 경고 (스택 2.0 이상)
             if 2.0 <= stack < TIMEOUT_LIMIT:
                 if not hasattr(client, f"warned_{user_id}") or time.time() - getattr(client, f"warned_{user_id}") > 10:
                     setattr(client, f"warned_{user_id}", time.time())
                     await message.channel.send("야, 작작 보내라니깐? ㅋㅋㅋ 숨 좀 쉬고 천천히 말해!")
                 return
-            # 2단계 검거 (스택 5.0 이상 -> 타임아웃)
             elif stack >= TIMEOUT_LIMIT:
                 user_spam_count[user_id] = 0.0
                 if hasattr(client, f"warned_{user_id}"):
@@ -265,7 +263,6 @@ async def process_delayed_message(user_id, message):
         if reply:
             full_reply = reply
             
-            # 내장형 검열 멘트 출력 시 유저 뇌절글 강제 삭제
             if "선 넘는 헛소리" in reply or "방금 입에서 튀어나온 말" in reply:
                 try: await message.delete()
                 except: pass
@@ -284,7 +281,8 @@ async def process_delayed_message(user_id, message):
                 else: current_chunk = line
             if current_chunk: final_messages.append(current_chunk)
 
-            final_messages = final_messages[:3]
+            # ★ 기존 :3 에서 :5 로 넉넉하게 상향 완료! (장문 줄바꿈 삭제 방지)
+            final_messages = final_messages[:5]
             for idx, msg_content in enumerate(final_messages):
                 await message.channel.send(msg_content)
                 if idx < len(final_messages) - 1: await asyncio.sleep(0.5)
