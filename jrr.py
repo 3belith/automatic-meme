@@ -1,4 +1,5 @@
 import os
+import asyncio
 import discord
 import openai
 from dotenv import load_dotenv
@@ -12,8 +13,8 @@ load_dotenv(env_path)
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# 깃허브 마켓플레이스 무료 AI API 설정 (400 에러 및 횟수 억까 없음)
-ai_client = openai.OpenAI(
+# [수정] AsyncOpenAI를 사용하여 비동기 클라이언트로 선언
+ai_client = openai.AsyncOpenAI(
     base_url="https://models.inference.ai.azure.com",
     api_key=GITHUB_TOKEN
 )
@@ -81,9 +82,9 @@ async def on_message(message):
             
             messages.append({"role": "user", "content": message.content})
 
-            # [최종 교정] GitHub Models 공식 인식 대소문자 모델 ID
-            chat_completion = ai_client.chat.completions.create(
-                model="Llama-3.3-70b-Instruct",  # 3.3 버전 대형 모델 명칭이야!
+            # [수정] await를 붙여서 비동기 방식으로 생성 요청 (더 이상 봇이 멈추지 않음)
+            chat_completion = await ai_client.chat.completions.create(
+                model="Llama-3.3-70b-Instruct",
                 temperature=0.85,
                 messages=messages
             )
@@ -95,7 +96,15 @@ async def on_message(message):
                 return
 
             if reply:
-                await message.channel.send(reply)
+                # [기능 추가] AI가 끊어준 문장(\n) 단위로 쪼개서 각각의 디스코드 메시지로 연속 전송
+                # 빈 줄이 연속으로 생기면 스킵하기 위해 리스트 컴프리헨션 사용
+                lines = [line.strip() for line in reply.split('\n') if line.strip()]
+                
+                for idx, line in enumerate(lines):
+                    await message.channel.send(line)
+                    # 실제 사람이 타자 쳐서 연달아 보내는 느낌을 주기 위해 메시지 간 0.5초의 짧은 간격 부여
+                    if idx < len(lines) - 1:
+                        await asyncio.sleep(0.5)
                 
                 history.append({"role": "user", "content": message.content})
                 history.append({"role": "assistant", "content": reply})
