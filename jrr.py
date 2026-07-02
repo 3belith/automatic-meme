@@ -268,9 +268,10 @@ async def process_delayed_message(user_id, message):
                 except: pass
 
             # 깔끔하게 줄바꿈 기준으로 쪼개고 빈 줄만 제거해서 전송
-            final_messages = [line.strip() for line in reply.split('\n') if line.strip()]
+            # 빈 줄이나 공백만 있는 줄을 철저하게 필터링해서 진짜 글자만 남기기
+            final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
             
-            # 최대 5줄까지 안전하게 끊어 치기 전송
+            # 진짜 글자가 있는 문장만 최대 5줄 컷!
             final_messages = final_messages[:5]
             for idx, msg_content in enumerate(final_messages):
                 await message.channel.send(msg_content)
