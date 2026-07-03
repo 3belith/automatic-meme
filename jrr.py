@@ -22,7 +22,6 @@ API_KEYS = [
     os.getenv("GEMINI_API_KEY_2"),
     os.getenv("GEMINI_API_KEY_3")
 ]
-# 빈 값 필터링 (정상적으로 로드된 키만 남김)
 API_KEYS = [k for k in API_KEYS if k]
 current_key_idx = 0
 
@@ -45,9 +44,10 @@ user_buffer_tasks = {}
 
 WAIT_DELAY = 1.8
 
-# 허용 문자 및 한자 차단 정규식
-ALLOWED_CHAR_PATTERN = re.compile(r'[ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z0-9\s!@#$%^&*()_+\-=\[\] {};\':",./<>?\\\|~`\U00010000-\U0010FFFF]')
+# 주르르 답변 정제용 정규식 (한자, 유니코드 특수 외계어 차단용)
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
+# 한국어(자음, 모음, 완성형), 영어, 숫자, 일반 문장부호/이모지만 허용하고 이상한 특수문자/외계어는 타겟팅
+CLEAN_REPLY_PATTERN = re.compile(r'[^ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z0-9\s!@#$%^&*()_+\-=\[\] {};\':",./<>?\\\|~`\U00010000-\U0010FFFF]')
 
 DB_PATH = os.path.join(current_dir, 'jrr_memory.db')
 
@@ -126,18 +126,14 @@ JRR_SYSTEM_PROMPT = (
 async def call_gemini_api(contents):
     global LAST_API_CALL_TIME, current_key_idx
     
-    # 코어당 속도를 위해 대기 시간을 2.0초로 단축 (키가 3개이므로 분산됨)
     time_since_last_call = time.time() - LAST_API_CALL_TIME
     if time_since_last_call < 2.0:
         await asyncio.sleep(2.0 - time_since_last_call)
         
     await api_semaphore.acquire()
     try:
-        # 키 개수만큼 최대 재시도 루프 (돌려막기 핵심)
         for _ in range(len(API_KEYS)):
             current_key = API_KEYS[current_key_idx]
-            
-            # 다음번 요청을 위해 미리 인덱스 회전
             current_key_idx = (current_key_idx + 1) % len(API_KEYS)
             
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={current_key}"
@@ -160,11 +156,9 @@ async def call_gemini_api(contents):
                         try: return res_json['candidates'][0]['content']['parts'][0]['text'].strip()
                         except: return ""
                     elif response.status == 429:
-                        # 429 뜨면 다음 코어로 넘어가서 루프 계속 돌기
                         print(f"⚠️ 코어 {current_key_idx}번이 429 에러를 만남. 다음 코어로 즉시 전환합니다.")
                         continue
                         
-        # 모든 코어가 429에 걸렸을 때만 에러 반환
         return "RATE_LIMIT_ERROR"
         
     except Exception as e:
@@ -176,7 +170,7 @@ async def call_gemini_api(contents):
 @client.event
 async def on_ready():
     init_db()
-    print(f"가동 완료 (🔥 3중 코어 로테이션 가동 중! 활성화된 키 개수: {len(API_KEYS)}개): {client.user.name}")
+    print(f"가동 완료 (🔥 유저 프리패스 + 주르르 전용 정제기 장착 완결판): {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -187,14 +181,12 @@ async def on_message(message):
     content = message.content.strip()
     current_time = time.time()
     
-    # 1. 메시지 유입 시 실시간 도배 카운트 연산
     if user_id in user_last_msg_time:
         if current_time - user_last_msg_time[user_id] < 2.5:
             user_spam_count[user_id] += 1
             
     user_last_msg_time[user_id] = current_time
 
-    # 2. 버퍼링 타이머 재예약 (문장 조립)
     if user_id in user_buffer_tasks:
         user_buffer_tasks[user_id].cancel()
 
@@ -217,38 +209,28 @@ async def process_delayed_message(user_id, message):
     if not full_content:
         return
 
-    # 3. [도배 및 뇌절 최종 판정 장치] 
+    # 도배 및 뇌절 판정
     stack = user_spam_count[user_id]
-    
     if stack >= 4:
         user_spam_count[user_id] = 0  
-        
         if isinstance(message.author, discord.Member):
             try:
                 await message.author.timeout(datetime.timedelta(seconds=30), reason="주르르 봇 도배 및 뇌절")
                 await message.channel.send(f"{message.author.mention} 적당히 뇌절하라 했지? 30초 동안 벽 보고 반성해라 참나 ㅋㅋㅋ")
             except discord.Forbidden:
-                print("❌ 권한 부족: 서버 설정에서 봇의 역할 순위를 유저보다 위로 올려야 합니다.")
                 await message.channel.send("원래 같으면 밴인데 봇 권한이 밀려서 봐준다잉? 옘병 역할 서열 올리고 와라!")
             except Exception as e:
-                print(f"타임아웃 처리 중 예외 발생: {e}")
                 await message.channel.send("아!! 적당히 도배해라 진짜 주랄ㄴ 먹고 싶냐? 확 꿀밤 때려버린다?")
         else:
             await message.channel.send("야!! 적당히 도배해라 진짜 주랄ㄴ 먹고 싶냐? 확 꿀밤 때려버린다?")
         return
-        
     elif stack >= 2:
         await message.channel.send("야, 작작 보내라니깐? ㅋㅋㅋ 숨 좀 쉬고 천천히 말해!")
 
     user_spam_count[user_id] = 0
 
-    # [외국어/한자 도배 차단 로직]
-    total_chars = len(full_content)
-    if total_chars > 0:
-        invalid_chars = [c for c in full_content if not ALLOWED_CHAR_PATTERN.match(c)]
-        if len(invalid_chars) / total_chars > 0.15:
-            await message.channel.send("야, 방금 보낸 거 뭔 나라 말이냐? ㅋㅋㅋ 한자나 이상한 외국어 쓰지 마라 진짜 모루궤어여;;")
-            return
+    # ✨ [유저 메시지는 무조건 통과]
+    # 유저가 밈 템플릿, 복붙 장문, 이모지 테러를 하든 검열 없이 제미니에게 그대로 전달!
 
     try:
         if user_id not in user_conversations or not user_conversations[user_id]:
@@ -266,9 +248,17 @@ async def process_delayed_message(user_id, message):
                 await message.channel.send("아잇 3중 코어가 전부 터졌잔슴;; 유저들이 말을 너무 많이 걸어서 구글 서버가 터졌어! 5초만 쉬었다가 말해줘!")
                 return
 
-            if HANJA_PATTERN.search(reply):
-                reply = HANJA_PATTERN.sub('', reply).strip()
-                if not reply: reply = "방금 렉 걸려서 뭔 소린지 모루궤어여 ㅋㅋㅋ"
+            if reply:
+                # 💥 [주르르 답변 필터링 장치]
+                # 1. 한자가 섞여 나오면 강제로 공백 삭제 처리
+                if HANJA_PATTERN.search(reply):
+                    reply = HANJA_PATTERN.sub('', reply).strip()
+                
+                # 2. 제미니가 가끔 내뱉는 영문 외계어나 고장 난 깨진 문자(마크다운 잔해 등) 강제 청소
+                reply = CLEAN_REPLY_PATTERN.sub('', reply).strip()
+                
+                if not reply: 
+                    reply = "방금 렉 걸려서 뭔 소린지 모루궤어여 ㅋㅋㅋ 다시 말해봐!"
 
         if reply:
             full_reply = reply
