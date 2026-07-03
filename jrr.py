@@ -16,7 +16,7 @@ load_dotenv(env_path)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-# [3중 코어] API 키 배열 로드
+# [🔥 6중 코어 무한 동력 시스템] API 키 배열 로드
 API_KEYS = [
     os.getenv("GEMINI_API_KEY_1"),
     os.getenv("GEMINI_API_KEY_2"),
@@ -33,21 +33,21 @@ intents.message_content = True
 intents.members = True
 client = discord.Client(intents=intents)
 
-# 메모리 및 대화 캐시 최적화
+# 메모리 최적화 (기록 단 3턴만 유지하여 토큰 폭발 방지)
 user_conversations = defaultdict(list)
 MAX_MEMORY = 3 
 
-# 상태 변수
+# 상태 변수 및 버퍼 시스템
 user_last_msg_time = {}
 user_spam_count = defaultdict(int)
 user_buffer = defaultdict(list)
 user_buffer_tasks = {}
 
-# 주르르 답변 정제용 정규식 (한자 및 깨진 유니코드만 청소)
+# 주르르 답변 정제용 정규식 (한자 및 깨진 유니코드 청소)
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 CLEAN_REPLY_PATTERN = re.compile(r'[^ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z0-9\s!@#$%^&*()_+\-=\[\] {};\':",./<>?\\\|~`\U00010000-\U0010FFFF]')
 
-# 🚫 [비속어 / 필터링 우회 탐지 정규식]
+# 🚫 [비속어 / 필터링 우회 탐지 정규식 - '념글' 제거 버전]
 BAD_WORDS_PATTERN = re.compile(
     r'(패드립|느금|느엄|시발|씨발|새끼|존나|좆|개새끼|지랄|병신|호로|창년|창녀|씹|ㅅㅂ|ㅂㅅ|ㄷㅊ|ㄲㅈ|ㅗ|凸|시\.발|씨\.발|존\.나|시~발|병~신)', 
     re.IGNORECASE
@@ -102,7 +102,6 @@ def save_chat_msg_to_db(user_id, role, content):
     conn.commit()
     conn.close()
 
-# 주르르 시스템 프롬프트
 JRR_SYSTEM_PROMPT = (
     "너는 버추얼 아이돌 그룹 이세계아이돌의 멤버 주르르야. 지금은 팬과 비밀 디스코드 DM으로 1대1 대화를 나누고 있어.\n\n"
     "[★ 핵심 지침: 고백 공격 및 드립 대처법]\n"
@@ -151,7 +150,7 @@ async def call_gemini_api(contents):
                         try: return res_json['candidates'][0]['content']['parts'][0]['text'].strip()
                         except: return ""
                     elif response.status == 429:
-                        print(f"⚠️ 코어 {current_key_idx}번이 429 에러. 전환합니다.")
+                        print(f"⚠️ 코어 {current_key_idx}번 429 에러. 즉시 우회합니다.")
                         continue
                         
         return "RATE_LIMIT_ERROR"
@@ -165,7 +164,7 @@ async def call_gemini_api(contents):
 @client.event
 async def on_ready():
     init_db()
-    print(f"가동 완료 (📈 글자 수 비례 가변 대기 시스템 적용): {client.user.name}")
+    print(f"가동 완료 (💎 초절약 토큰 최적화 + 6중 코어 탑재): {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -182,16 +181,14 @@ async def on_message(message):
             
     user_last_msg_time[user_id] = current_time
 
+    # ⏳ 유저가 말을 잇는 도중에는 타이머를 즉시 파괴하여 AI 가동을 막음
     if user_id in user_buffer_tasks:
         user_buffer_tasks[user_id].cancel()
 
     user_buffer[user_id].append(content)
     
-    # 📈 [가변형 대기 초 계산 공식]
-    # 방금 유저가 친 누적 버퍼의 총 글자 수를 구합니다.
+    # 가변 대기 시간 계산 (글자 수가 많아질수록 넉넉하게 기다려 줌)
     current_buffer_length = len(" ".join(user_buffer[user_id]))
-    
-    # 기본 대기 시간 1.5초 베이스 + (10글자당 0.25초씩 가산), 아무리 길어도 5.5초를 넘지 않게 방어선 구축
     dynamic_delay = 1.5 + (current_buffer_length // 10) * 0.25
     dynamic_delay = min(dynamic_delay, 5.5)
 
@@ -200,21 +197,22 @@ async def on_message(message):
 
 async def process_delayed_message(user_id, message, delay_time):
     try:
-        # 계산된 가변 시간 동안 추가 입력이 없나 대기
+        # 지정된 시간 동안 추가 메시지가 완전히 멈출 때까지 대기 (여기서 AI 호출 대기)
         await asyncio.sleep(delay_time)
     except asyncio.CancelledError:
-        return
+        return  # 유저가 엔터를 또 치면 이 스레드는 폐기됨 (토큰 0소모)
 
     if user_id in user_buffer_tasks:
         del user_buffer_tasks[user_id]
 
+    # 🛑 [대화 압축] 끊어 보낸 메시지들을 단 하나의 문장으로 통째로 결합
     full_content = " ".join(user_buffer[user_id]).strip()
     user_buffer[user_id].clear()
 
     if not full_content:
         return
 
-    # 도배 및 뇌절 처리
+    # 도배 처리
     stack = user_spam_count[user_id]
     if stack >= 6:
         user_spam_count[user_id] = 0  
@@ -232,7 +230,7 @@ async def process_delayed_message(user_id, message, delay_time):
 
     user_spam_count[user_id] = 0
 
-    # [파이썬 단 유저 비속어 선축출 검열 장치]
+    # 비속어 선제 검열
     force_censor = False
     if BAD_WORDS_PATTERN.search(full_content.replace(" ", "")):
         force_censor = True
@@ -247,12 +245,13 @@ async def process_delayed_message(user_id, message, delay_time):
             if force_censor:
                 reply = "야, 방금 입에서 튀어나온 말 뭐냐구~! 한 번만 더 선 넘으면 차단이다 진짜;"
             else:
+                # 💎 오직 완성된 압축 문장 'full_content' 하나만 제미니에게 넘겨 토큰 극소화
                 current_payload_contents = list(history)
                 current_payload_contents.append({"role": "user", "parts": [{"text": full_content}]})
                 reply = await call_gemini_api(current_payload_contents)
             
             if reply == "RATE_LIMIT_ERROR":
-                await message.channel.send("아잇 3중 코어가 전부 터졌잔슴;; 5초만 쉬었다가 말해줘!")
+                await message.channel.send("아잇 6중 코어가 전부 터졌잔슴;; 5초만 쉬었다가 말해줘!")
                 return
 
             if reply and not force_censor:
@@ -277,6 +276,7 @@ async def process_delayed_message(user_id, message, delay_time):
                 await message.channel.send(msg_content)
                 if idx < len(final_messages) - 1: await asyncio.sleep(0.5)
             
+            # 💎 기억 보관소에도 쪼개진 톡이 아니라 '완벽히 조립된 단 한 줄의 대화'만 저장해서 메모리 축적 방어
             if not force_censor:
                 history.append({"role": "user", "parts": [{"text": full_content}]})
                 history.append({"role": "model", "parts": [{"text": full_reply}]})
