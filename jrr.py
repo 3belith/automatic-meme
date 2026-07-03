@@ -215,22 +215,28 @@ async def on_message(message):
     # 🛠️ [업데이트] 코드나 템플릿 형태의 글이면 장문/도배 필터링 패스
     is_template = is_code_or_template(content)
     
-    # ========================================================
+ # ========================================================
     # 🚨 [🚨 1단계: 실시간 레이더망 검사 - 매칭 시 즉시 차단]
     # ========================================================
-    
     if not is_template:
-        # 1. 단발성 극단적 장문 컷 (일반 텍스트만 해당)
-        line_count = len(content.split('\n'))
-        if line_count >= 4 or len(content) >= 100:
-            if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
-            user_buffer[user_id].clear()
-            user_spam_count[user_id] = 0
-            await execute_spam_punishment(message, "왐마야, 뭔 한 번에 장문을 이렇게 많이 보내?! 요약해서 한 줄씩 천천히 말해줘!", ban_seconds=3)
-            return
-
-        # 2. 로컬 글자 노가다 분탕 패턴 컷
         cleaned_space = content.replace(" ", "")
+
+        # 1. 앵무새 복붙 도배 즉시 컷 (★ 장문 복붙 및 일반 문장 연타 차단)
+        if user_id in user_last_full_content:
+            # 공백 제거하고 이전 메시지와 똑같다면 (글자 수 5자 이상일 때 작동)
+            if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
+                if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
+                user_buffer[user_id].clear()
+                user_spam_count[user_id] = 0
+                
+                # 만약 복붙인데 장문(100자 이상)이기까지 하다면 멘트 분기
+                if len(content) >= 100:
+                    await execute_spam_punishment(message, "왐마야, 이 긴 장문을 똑같이 복붙해서 또 보낸다구?! 뇌절은 금지야아~!", ban_seconds=10)
+                else:
+                    await execute_spam_punishment(message, "야아아, 똑같은 말 계속 복붙해서 도배하지 마라구 ㅋㅋㅋ 앵무새야 뭐야~!", ban_seconds=3)
+                return
+
+        # 2. 로컬 글자 노가다 분탕 패턴 컷 (아아아아아아아 같은 의미 없는 도배)
         if len(cleaned_space) >= 10:
             unique_chars = set(cleaned_space)
             diversity_ratio = len(unique_chars) / len(cleaned_space)
@@ -243,16 +249,7 @@ async def on_message(message):
                 await execute_spam_punishment(message, "아라라, 무지성 글자 도배는 안 돼! 나 눈 아프단 말이야아~!", ban_seconds=3)
                 return
 
-        # 3. 앵무새 복붙 도배 즉시 컷
-        if user_id in user_last_full_content:
-            if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
-                if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
-                user_buffer[user_id].clear()
-                user_spam_count[user_id] = 0
-                await execute_spam_punishment(message, "야아아, 똑같은 말 계속 복붙해서 도배하지 마라구 ㅋㅋㅋ 앵무새야 뭐야~!", ban_seconds=3)
-                return
-
-        # 4. 초고속 무지성 연타 도배 누적치 계산
+        # 3. 초고속 무지성 연타 도배 누적치 계산 (짧은 문장 반복 처리)
         if user_id in user_buffer[user_id] and len(content) > 3:
             user_spam_count[user_id] += 2
 
