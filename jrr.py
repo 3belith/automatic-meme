@@ -55,7 +55,6 @@ BAD_WORDS_PATTERN = re.compile(
 )
 
 # 🚫 [연속 글자 노가다 도배 매칭 정규식]
-# 똑같은 글자나 기호가 연속으로 6번 이상 반복되면 바로 잡음 (ex: ㅋㅋㅋㅋㅋㅋ, !!!!!!!)
 REPETITIVE_PATTERN = re.compile(r'(.)\1{5,}')
 
 DB_PATH = os.path.join(current_dir, 'jrr_memory.db')
@@ -169,7 +168,7 @@ async def call_gemini_api(contents, dynamic_instruction):
 @client.event
 async def on_ready():
     init_db()
-    print(f"가동 완료 (⚡ 패턴 분석 + 3줄 제한 하이브리드 레이더 가동): {client.user.name}")
+    print(f"가동 완료 (⚡ 도배 삭제 + 3초 밴 징계 시스템 작동): {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -201,6 +200,24 @@ async def on_message(message):
     task = asyncio.create_task(process_delayed_message(user_id, message, dynamic_delay))
     user_buffer_tasks[user_id] = task
 
+# 🚫 [도배 빌런 즉시 처단 함수: 집행검]
+async def execute_spam_punishment(message, reason_msg):
+    # 1. 메시지 즉시 삭제
+    try:
+        await message.delete()
+    except Exception as e:
+        print(f"메시지 삭제 실패 (권한 부족 등): {e}")
+
+    # 2. 3초 타임아웃 밴 집행
+    if isinstance(message.author, discord.Member):
+        try:
+            await message.author.timeout(datetime.timedelta(seconds=3), reason="주르르 봇 도배 탐지 차단")
+            await message.channel.send(f"{message.author.mention} {reason_msg} (도배 글은 삭제 처리됨, 3초간 밴!)")
+        except discord.Forbidden:
+            await message.channel.send(f"원래 같으면 3초 밴인데 봇 서열이 더 낮아서 봐준다잉? 아무튼 {reason_msg}")
+    else:
+        await message.channel.send(reason_msg)
+
 async def process_delayed_message(user_id, message, delay_time):
     try:
         await asyncio.sleep(delay_time)
@@ -216,47 +233,45 @@ async def process_delayed_message(user_id, message, delay_time):
     if not full_content:
         return
 
-    # 🚫 [1층 방어선: 3줄 이상 / 100자 이상 하드웨어 컷]
+    # 🚫 [1층 방어선: 3줄 이상 / 100자 이상 장문 컷 및 삭제]
     line_count = len(full_content.split('\n'))
     if line_count >= 4 or len(full_content) >= 100:
         user_spam_count[user_id] = 0
-        await message.channel.send("아니 뭔 한 번에 세 줄 넘게 보내냐? ㅋㅋㅋ 읽기 귀찮잔슴~! 요약해서 한 줄씩 쳐라!")
+        await execute_spam_punishment(message, "아니 뭔 한 번에 세 줄 넘게 보내냐? ㅋㅋㅋ 요약해서 한 줄씩 쳐라!")
         return
 
-    # 🚫 [2층 방어선: 로컬 텍스트 빌런 패턴 차단 엔진]
+    # 🚫 [2층 방어선: 로컬 텍스트 빌런 패턴 차단 및 삭제]
     cleaned_space = full_content.replace(" ", "")
     if len(cleaned_space) >= 10:
-        # 고유 글자 비율 검사 (글자는 긴데 사용된 글자 종류가 너무 적을 때 컷)
         unique_chars = set(cleaned_space)
         diversity_ratio = len(unique_chars) / len(cleaned_space)
-        
-        # 특정 단어나 기호의 무지성 연속 반복 검사 (ex: ㅋㅋㅋㅋㅋㅋ, !!!!!!!!)
         has_repetition = REPETITIVE_PATTERN.search(cleaned_space)
         
         if diversity_ratio < 0.35 or has_repetition:
             user_spam_count[user_id] = 0
-            await message.channel.send("아오 글자 분탕 도배 작작해라 진짜 ㅋㅋㅋ 눈 아프잔슴~! 안 읽어!")
+            await execute_spam_punishment(message, "아오 글자 분탕 도배 작작해라 진짜 ㅋㅋㅋ 눈 아프잔슴~!")
             return
 
-    # 앵무새 복붙 도배 컷
+    # 🚫 [3층 방어선: 앵무새 복붙 도배 컷 및 삭제]
     if user_id in user_last_full_content:
         if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
             user_spam_count[user_id] = 0
-            await message.channel.send("야, 똑같은 말 복붙해서 도배하지 마라 ㅋㅋㅋ 앵무새냐고~! 훠이 훠이")
+            await execute_spam_punishment(message, "야, 똑같은 말 복붙해서 도배하지 마라 ㅋㅋㅋ 앵무새냐고~!")
             return
 
     user_last_full_content[user_id] = full_content
 
-    # 일반 연타 도배 처리
+    # 🚫 [4층 방어선: 연타 도배 누적 패널티 (기존 30초 징계 유지)]
     stack = user_spam_count[user_id]
     if stack >= 6:
         user_spam_count[user_id] = 0  
         if isinstance(message.author, discord.Member):
             try:
-                await message.author.timeout(datetime.timedelta(seconds=30), reason="주르르 봇 도배 및 뇌절")
+                await message.delete()
+                await message.author.timeout(datetime.timedelta(seconds=30), reason="주르르 봇 무지성 연타 도배")
                 await message.channel.send(f"{message.author.mention} 적당히 뇌절하라 했지? 30초 동안 벽 보고 반성해라 참나 ㅋㅋㅋ")
             except discord.Forbidden:
-                await message.channel.send("원래 같으면 밴인데 서열 밀려서 봐준다잉? 역할 서열 올리고 와라!")
+                await message.channel.send("역할 서열 밀려서 봐준다잉? 역할 서열 올리고 와라!")
         else:
             await message.channel.send("야!! 적당히 도배해라 진짜 확 꿀밤 때려버린다?")
         return
@@ -281,7 +296,6 @@ async def process_delayed_message(user_id, message, delay_time):
                 reply = "야, 방금 입에서 튀어나온 말 뭐냐구~! 한 번만 더 선 넘으면 차단이다 진짜;"
                 dynamic_prompt = JRR_SYSTEM_PROMPT_BASE
             else:
-                # [★ 답변 길이 제한] 최대 3줄 유저 마지노선에 맞춤
                 input_len = len(full_content)
                 if input_len <= 15:
                     length_instruction = "[★ 답변 길이 극소화 제한]\n유저가 매우 짧게 말했으니, 너도 무조건 줄바꿈 포함 딱 1~2줄(단문) 이내로만 아주 짧게 틱틱거리며 대답해라."
