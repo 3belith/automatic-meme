@@ -42,6 +42,7 @@ user_last_msg_time = {}
 user_spam_count = defaultdict(int)
 user_buffer = defaultdict(list)
 user_buffer_tasks = {}
+user_last_full_content = {}  # 🔄 유저가 마지막으로 보낸 최종 문장을 기억하는 저장소
 
 # 주르르 답변 정제용 정규식 (한자 및 깨진 유니코드 청소)
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
@@ -138,7 +139,7 @@ async def call_gemini_api(contents, dynamic_instruction):
                 "systemInstruction": {"parts": [{"text": dynamic_instruction}]},
                 "generationConfig": {
                     "temperature": 0.88,
-                    "maxOutputTokens": 400  # 토큰 출력량 자체를 줄여 장문 방지
+                    "maxOutputTokens": 400
                 }
             }
             
@@ -165,7 +166,7 @@ async def call_gemini_api(contents, dynamic_instruction):
 @client.event
 async def on_ready():
     init_db()
-    print(f"가동 완료 (⚡ 답변 길이 최적화 + 복붙 도배 컷 탑재): {client.user.name}")
+    print(f"가동 완료 (⚡ 중복 복붙 분탕 차단 레이더 탑재): {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -176,6 +177,12 @@ async def on_message(message):
     content = message.content.strip()
     current_time = time.time()
     
+    # 🔄 [실시간 도배 버퍼 중복 체크]
+    # 타이머 대기 시간 동안 유저가 똑같은 말을 연타하는지 확인
+    if user_id in user_buffer[user_id] and len(content) > 3:
+        # 단, "ㅋㅋㅋ" 나 "이거" 같은 짧은 단어 연타는 패스하고 4자 이상 똑같은 구절 복붙할 때만 작동
+        user_spam_count[user_id] += 2  # 중복 연타는 스택을 더 빠르게 쌓음
+
     if user_id in user_last_msg_time:
         if current_time - user_last_msg_time[user_id] < 2.5:
             user_spam_count[user_id] += 1
@@ -209,14 +216,23 @@ async def process_delayed_message(user_id, message, delay_time):
     if not full_content:
         return
 
-    # 🚫 [복붙형 장문 분탕 컷 장치]
-    # 유저가 타이핑이 아니라 어디서 긴 템플릿 글을 통째로 복붙해 오면 (120자 이상), 도배로 판단하여 즉시 꼽주고 종료
-    if len(full_content) >= 120:
-        user_spam_count[user_id] = 0
-        await message.channel.send("아니 ㅋㅋㅋ 어디서 이 긴 걸 뇌절치려고 복붙해 왔냐? 걍 도배 작작하잔슴~! 안 읽음 ㅅㄱ")
-        return
+    # 🚫 [앵무새 복붙 도배 컷 엔진]
+    # 공백 다 제거하고 순수 글자 매칭으로 이전 턴이랑 완벽히 일치하는지 비교
+    cleaned_current = full_content.replace(" ", "")
+    
+    if user_id in user_last_full_content:
+        cleaned_last = user_last_full_content[user_id].replace(" ", "")
+        
+        # 글자 수가 어느 정도 되는 문장(5자 이상)인데 아까 보낸 거랑 똑같이 복붙했다? 바로 컷
+        if cleaned_current == cleaned_last and len(cleaned_current) >= 5:
+            user_spam_count[user_id] = 0
+            await message.channel.send("야, 똑같은 말 복붙해서 도배하지 마라 ㅋㅋㅋ 앵무새냐고~! 훠이 훠이")
+            return
 
-    # 일반 도배 처리
+    # 이번 문장을 다음 턴 비교를 위해 기록
+    user_last_full_content[user_id] = full_content
+
+    # 일반 연타 도배 처리
     stack = user_spam_count[user_id]
     if stack >= 6:
         user_spam_count[user_id] = 0  
@@ -250,16 +266,16 @@ async def process_delayed_message(user_id, message, delay_time):
                 reply = "야, 방금 입에서 튀어나온 말 뭐냐구~! 한 번만 더 선 넘으면 차단이다 진짜;"
                 dynamic_prompt = JRR_SYSTEM_PROMPT_BASE
             else:
-                # 📈 [상대방 말 길이에 따른 답변 강도 동적 주입]
+                # 📈 [상대방 말 길이에 따른 답변 강도 동적 주입] - 장문 전면 허용
                 input_len = len(full_content)
                 if input_len <= 15:
-                    # 유저가 짧게 치면 주르르도 무조건 1~2문장 이내로 굵고 짧게 툭 던지도록 지시
                     length_instruction = "[★ 답변 길이 극소화 제한]\n유저가 매우 짧게 말했으니, 너도 무조건 줄바꿈 포함 딱 1~2줄(단문) 이내로만 아주 짧게 틱틱거리며 대답해라. 구구절절 길게 말하면 절대 안 됨."
                     max_lines = 2
                 elif input_len <= 50:
                     length_instruction = "[★ 답변 길이 보통 제한]\n유저가 보통 크기로 말했으니, 너도 줄바꿈 포함 2~3줄 이내로 간결하게 대답해라."
                     max_lines = 3
                 else:
+                    # 이제 장문(120자 이상 등)을 편지처럼 정성스레 보내도 제한 없이 다 읽고 넉넉하게 답장해 줌
                     length_instruction = "[★ 답변 길이 장문 제한]\n유저가 말을 꽤 길게 했으니, 너도 3~5줄 정도로 줄바꿈을 섞어서 성의 있게 받아쳐라."
                     max_lines = 5
 
@@ -289,7 +305,6 @@ async def process_delayed_message(user_id, message, delay_time):
                 except: pass
 
             final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
-            # ✂️ 동적으로 지정된 줄 수에 맞춰서 최종 전송 개수를 칼같이 슬라이싱
             final_messages = final_messages[:max_lines]
             
             for idx, msg_content in enumerate(final_messages):
