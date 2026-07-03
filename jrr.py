@@ -20,7 +20,10 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEYS = [
     os.getenv("GEMINI_API_KEY_1"),
     os.getenv("GEMINI_API_KEY_2"),
-    os.getenv("GEMINI_API_KEY_3")
+    os.getenv("GEMINI_API_KEY_3"),
+    os.getenv("GEMINI_API_KEY_4"),
+    os.getenv("GEMINI_API_KEY_5"),
+    os.getenv("GEMINI_API_KEY_6")
 ]
 API_KEYS = [k for k in API_KEYS if k]
 current_key_idx = 0
