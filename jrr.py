@@ -177,6 +177,17 @@ async def on_message(message):
     user_id = message.author.id
     content = message.content.strip()
 
+    current_time = time.time()
+    
+    # 1. 메시지가 들어올 때마다 실시간으로 도배 카운트 스택 가산
+    if user_id in user_last_msg_time:
+        # 마지막으로 메시지 이벤트를 받은 지 2.5초 이내에 또 보냈다면 도배로 인식
+        if current_time - user_last_msg_time[user_id] < 2.5:
+            user_spam_count[user_id] += 1
+    
+    user_last_msg_time[user_id] = current_time
+
+    # 2. 기존 버퍼 타이머 취소 및 재예약 (문장 조립)
     if user_id in user_buffer_tasks:
         user_buffer_tasks[user_id].cancel()
 
@@ -199,9 +210,32 @@ async def process_delayed_message(user_id, message):
     if not full_content:
         return
 
-    current_time = time.time()
+    # 3. [도배 및 뇌절 최종 판정 장치]
+    # 1.8초 동안 누적된 메시지 전송 횟수가 4회 이상이면 뇌절로 판단
+    stack = user_spam_count[user_id]
+    
+    if stack >= 4:
+        user_spam_count[user_id] = 0 # 스택 초기화
+        
+        if isinstance(message.author, discord.Member):
+            try:
+                # 타임아웃 실행
+                await message.author.timeout(datetime.timedelta(seconds=30), reason="주르르 봇 도배 및 뇌절")
+                await message.channel.send(f"{message.author.mention} 적당히 뇌절하라 했지? 30초 동안 벽 보고 반성해라 참나 ㅋㅋㅋ")
+            except:
+                await message.channel.send("원래 같으면 밴인데 봇 권한이 밀려서 봐준다잉? 옘병 역할 서열 올리고 와라!")
+        else:
+            await message.channel.send("야!! 적당히 도배해라 진짜 주랄ㄴ 먹고 싶냐? 확 꿀밤 때려버린다?")
+        return
+        
+    elif stack >= 2:
+        # 조금 많이 보낸 수준이면 가벼운 경고 (리턴 안 하고 대화는 진행)
+        await message.channel.send("야, 작작 보내라니깐? ㅋㅋㅋ 숨 좀 쉬고 천천히 말해!")
 
-    # [외국어/한자 도배 차단 로직]
+    # 정상 대화 진행 시 도배 스택 초기화
+    user_spam_count[user_id] = 0
+
+    # [외국어/한자 도배 차단 로직] 여기서부터 기존 코드와 동일...
     total_chars = len(full_content)
     if total_chars > 0:
         invalid_chars = [c for c in full_content if not ALLOWED_CHAR_PATTERN.match(c)]
