@@ -42,7 +42,7 @@ user_last_msg_time = {}
 user_spam_count = defaultdict(int)
 user_buffer = defaultdict(list)
 user_buffer_tasks = {}
-user_last_full_content = {}  # 🔄 유저가 마지막으로 보낸 최종 문장을 기억하는 저장소
+user_last_full_content = {}  # 유저가 마지막으로 보낸 최종 문장 기억
 
 # 주르르 답변 정제용 정규식 (한자 및 깨진 유니코드 청소)
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
@@ -53,6 +53,10 @@ BAD_WORDS_PATTERN = re.compile(
     r'(패드립|느금|느엄|시발|씨발|새끼|존나|좆|개새끼|지랄|병신|호로|창년|창녀|씹|ㅅㅂ|ㅂㅅ|ㄷㅊ|ㄲㅈ|ㅗ|凸|시\.발|씨\.발|존\.나|시~발|병~신)', 
     re.IGNORECASE
 )
+
+# 🚫 [연속 글자 노가다 도배 매칭 정규식]
+# 똑같은 글자나 기호가 연속으로 6번 이상 반복되면 바로 잡음 (ex: ㅋㅋㅋㅋㅋㅋ, !!!!!!!)
+REPETITIVE_PATTERN = re.compile(r'(.)\1{5,}')
 
 DB_PATH = os.path.join(current_dir, 'jrr_memory.db')
 api_semaphore = asyncio.Semaphore(1)
@@ -103,7 +107,6 @@ def save_chat_msg_to_db(user_id, role, content):
     conn.commit()
     conn.close()
 
-# 유저 입력 길이에 맞춰 AI 프롬프트에 동적 제약을 걸기 위한 베이스 프롬프트
 JRR_SYSTEM_PROMPT_BASE = (
     "너는 버추얼 아이돌 그룹 이세계아이돌의 멤버 주르르야. 지금은 팬과 비밀 디스코드 DM으로 1대1 대화를 나누고 있어.\n\n"
     "[★ 핵심 지침: 고백 공격 및 드립 대처법]\n"
@@ -166,7 +169,7 @@ async def call_gemini_api(contents, dynamic_instruction):
 @client.event
 async def on_ready():
     init_db()
-    print(f"가동 완료 (⚡ 중복 복붙 분탕 차단 레이더 탑재): {client.user.name}")
+    print(f"가동 완료 (⚡ 패턴 분석 + 3줄 제한 하이브리드 레이더 가동): {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -177,11 +180,8 @@ async def on_message(message):
     content = message.content.strip()
     current_time = time.time()
     
-    # 🔄 [실시간 도배 버퍼 중복 체크]
-    # 타이머 대기 시간 동안 유저가 똑같은 말을 연타하는지 확인
     if user_id in user_buffer[user_id] and len(content) > 3:
-        # 단, "ㅋㅋㅋ" 나 "이거" 같은 짧은 단어 연타는 패스하고 4자 이상 똑같은 구절 복붙할 때만 작동
-        user_spam_count[user_id] += 2  # 중복 연타는 스택을 더 빠르게 쌓음
+        user_spam_count[user_id] += 2
 
     if user_id in user_last_msg_time:
         if current_time - user_last_msg_time[user_id] < 2.5:
@@ -216,20 +216,35 @@ async def process_delayed_message(user_id, message, delay_time):
     if not full_content:
         return
 
-    # 🚫 [앵무새 복붙 도배 컷 엔진]
-    # 공백 다 제거하고 순수 글자 매칭으로 이전 턴이랑 완벽히 일치하는지 비교
-    cleaned_current = full_content.replace(" ", "")
-    
-    if user_id in user_last_full_content:
-        cleaned_last = user_last_full_content[user_id].replace(" ", "")
+    # 🚫 [1층 방어선: 3줄 이상 / 100자 이상 하드웨어 컷]
+    line_count = len(full_content.split('\n'))
+    if line_count >= 4 or len(full_content) >= 100:
+        user_spam_count[user_id] = 0
+        await message.channel.send("아니 뭔 한 번에 세 줄 넘게 보내냐? ㅋㅋㅋ 읽기 귀찮잔슴~! 요약해서 한 줄씩 쳐라!")
+        return
+
+    # 🚫 [2층 방어선: 로컬 텍스트 빌런 패턴 차단 엔진]
+    cleaned_space = full_content.replace(" ", "")
+    if len(cleaned_space) >= 10:
+        # 고유 글자 비율 검사 (글자는 긴데 사용된 글자 종류가 너무 적을 때 컷)
+        unique_chars = set(cleaned_space)
+        diversity_ratio = len(unique_chars) / len(cleaned_space)
         
-        # 글자 수가 어느 정도 되는 문장(5자 이상)인데 아까 보낸 거랑 똑같이 복붙했다? 바로 컷
-        if cleaned_current == cleaned_last and len(cleaned_current) >= 5:
+        # 특정 단어나 기호의 무지성 연속 반복 검사 (ex: ㅋㅋㅋㅋㅋㅋ, !!!!!!!!)
+        has_repetition = REPETITIVE_PATTERN.search(cleaned_space)
+        
+        if diversity_ratio < 0.35 or has_repetition:
+            user_spam_count[user_id] = 0
+            await message.channel.send("아오 글자 분탕 도배 작작해라 진짜 ㅋㅋㅋ 눈 아프잔슴~! 안 읽어!")
+            return
+
+    # 앵무새 복붙 도배 컷
+    if user_id in user_last_full_content:
+        if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
             user_spam_count[user_id] = 0
             await message.channel.send("야, 똑같은 말 복붙해서 도배하지 마라 ㅋㅋㅋ 앵무새냐고~! 훠이 훠이")
             return
 
-    # 이번 문장을 다음 턴 비교를 위해 기록
     user_last_full_content[user_id] = full_content
 
     # 일반 연타 도배 처리
@@ -252,7 +267,7 @@ async def process_delayed_message(user_id, message, delay_time):
 
     # 비속어 선제 검열
     force_censor = False
-    if BAD_WORDS_PATTERN.search(full_content.replace(" ", "")):
+    if BAD_WORDS_PATTERN.search(cleaned_space):
         force_censor = True
 
     try:
@@ -266,18 +281,14 @@ async def process_delayed_message(user_id, message, delay_time):
                 reply = "야, 방금 입에서 튀어나온 말 뭐냐구~! 한 번만 더 선 넘으면 차단이다 진짜;"
                 dynamic_prompt = JRR_SYSTEM_PROMPT_BASE
             else:
-                # 📈 [상대방 말 길이에 따른 답변 강도 동적 주입] - 장문 전면 허용
+                # [★ 답변 길이 제한] 최대 3줄 유저 마지노선에 맞춤
                 input_len = len(full_content)
                 if input_len <= 15:
-                    length_instruction = "[★ 답변 길이 극소화 제한]\n유저가 매우 짧게 말했으니, 너도 무조건 줄바꿈 포함 딱 1~2줄(단문) 이내로만 아주 짧게 틱틱거리며 대답해라. 구구절절 길게 말하면 절대 안 됨."
+                    length_instruction = "[★ 답변 길이 극소화 제한]\n유저가 매우 짧게 말했으니, 너도 무조건 줄바꿈 포함 딱 1~2줄(단문) 이내로만 아주 짧게 틱틱거리며 대답해라."
                     max_lines = 2
-                elif input_len <= 50:
-                    length_instruction = "[★ 답변 길이 보통 제한]\n유저가 보통 크기로 말했으니, 너도 줄바꿈 포함 2~3줄 이내로 간결하게 대답해라."
-                    max_lines = 3
                 else:
-                    # 이제 장문(120자 이상 등)을 편지처럼 정성스레 보내도 제한 없이 다 읽고 넉넉하게 답장해 줌
-                    length_instruction = "[★ 답변 길이 장문 제한]\n유저가 말을 꽤 길게 했으니, 너도 3~5줄 정도로 줄바꿈을 섞어서 성의 있게 받아쳐라."
-                    max_lines = 5
+                    length_instruction = "[★ 답변 길이 간결 제한]\n유저가 간결하게 말했으니, 너도 줄바꿈 포함 최대 2~3줄 이내로 쳐지지 않게 대답해라."
+                    max_lines = 3
 
                 dynamic_prompt = JRR_SYSTEM_PROMPT_BASE + length_instruction
                 
