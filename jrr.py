@@ -15,7 +15,16 @@ env_path = os.path.join(current_dir, '.env')
 load_dotenv(env_path)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# 🔥 [3중 코어] API 키 배열 로드
+API_KEYS = [
+    os.getenv("GEMINI_API_KEY_1"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3")
+]
+# 빈 값 필터링 (정상적으로 로드된 키만 남김)
+API_KEYS = [k for k in API_KEYS if k]
+current_key_idx = 0
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -42,7 +51,7 @@ HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 
 DB_PATH = os.path.join(current_dir, 'jrr_memory.db')
 
-# 제미니 분당 15번 제한 우회를 위한 글로벌 세마포어 대기열
+# 글로벌 세마포어 (요청이 꼬이지 않게 방어)
 api_semaphore = asyncio.Semaphore(1)
 LAST_API_CALL_TIME = 0.0
 
@@ -115,34 +124,49 @@ JRR_SYSTEM_PROMPT = (
 )
 
 async def call_gemini_api(contents):
-    global LAST_API_CALL_TIME
+    global LAST_API_CALL_TIME, current_key_idx
+    
+    # 코어당 속도를 위해 대기 시간을 2.0초로 단축 (키가 3개이므로 분산됨)
     time_since_last_call = time.time() - LAST_API_CALL_TIME
-    if time_since_last_call < 4.0:
-        await asyncio.sleep(4.0 - time_since_last_call)
+    if time_since_last_call < 2.0:
+        await asyncio.sleep(2.0 - time_since_last_call)
         
     await api_semaphore.acquire()
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "contents": contents,
-            "systemInstruction": {"parts": [{"text": JRR_SYSTEM_PROMPT}]},
-            "generationConfig": {
-                "temperature": 0.85,
-                "maxOutputTokens": 800
+        # 키 개수만큼 최대 재시도 루프 (돌려막기 핵심)
+        for _ in range(len(API_KEYS)):
+            current_key = API_KEYS[current_key_idx]
+            
+            # 다음번 요청을 위해 미리 인덱스 회전
+            current_key_idx = (current_key_idx + 1) % len(API_KEYS)
+            
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={current_key}"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "contents": contents,
+                "systemInstruction": {"parts": [{"text": JRR_SYSTEM_PROMPT}]},
+                "generationConfig": {
+                    "temperature": 0.85,
+                    "maxOutputTokens": 800
+                }
             }
-        }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    LAST_API_CALL_TIME = time.time()
+                    
+                    if response.status == 200:
+                        res_json = await response.json()
+                        try: return res_json['candidates'][0]['content']['parts'][0]['text'].strip()
+                        except: return ""
+                    elif response.status == 429:
+                        # 429 뜨면 다음 코어로 넘어가서 루프 계속 돌기
+                        print(f"⚠️ 코어 {current_key_idx}번이 429 에러를 만남. 다음 코어로 즉시 전환합니다.")
+                        continue
+                        
+        # 모든 코어가 429에 걸렸을 때만 에러 반환
+        return "RATE_LIMIT_ERROR"
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as response:
-                LAST_API_CALL_TIME = time.time()
-                if response.status == 200:
-                    res_json = await response.json()
-                    try: return res_json['candidates'][0]['content']['parts'][0]['text'].strip()
-                    except: return ""
-                elif response.status == 429:
-                    return "RATE_LIMIT_ERROR"
-                return ""
     except Exception as e:
         print(f"API 내부 에러 발생: {e}")
         return ""
@@ -152,7 +176,7 @@ async def call_gemini_api(contents):
 @client.event
 async def on_ready():
     init_db()
-    print(f"가동 완료 (도배/스파게티 코드 완전 정리 버전): {client.user.name}")
+    print(f"가동 완료 (🔥 3중 코어 로테이션 가동 중! 활성화된 키 개수: {len(API_KEYS)}개): {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -197,7 +221,7 @@ async def process_delayed_message(user_id, message):
     stack = user_spam_count[user_id]
     
     if stack >= 4:
-        user_spam_count[user_id] = 0  # 초기화
+        user_spam_count[user_id] = 0  
         
         if isinstance(message.author, discord.Member):
             try:
@@ -214,10 +238,8 @@ async def process_delayed_message(user_id, message):
         return
         
     elif stack >= 2:
-        # 적당히 빠른 입력은 한마디 던져주고 대화는 계속 이어가기
         await message.channel.send("야, 작작 보내라니깐? ㅋㅋㅋ 숨 좀 쉬고 천천히 말해!")
 
-    # 정상 대화 시 스택 리셋
     user_spam_count[user_id] = 0
 
     # [외국어/한자 도배 차단 로직]
@@ -241,7 +263,7 @@ async def process_delayed_message(user_id, message):
             reply = await call_gemini_api(current_payload_contents)
             
             if reply == "RATE_LIMIT_ERROR":
-                await message.channel.send("아잇 유저들이 말을 너무 많이 걸어서 구글 서버 렉걸렸잔슴;; 5초만 이따가 다시 말해줘!")
+                await message.channel.send("아잇 3중 코어가 전부 터졌잔슴;; 유저들이 말을 너무 많이 걸어서 구글 서버가 터졌어! 5초만 쉬었다가 말해줘!")
                 return
 
             if HANJA_PATTERN.search(reply):
