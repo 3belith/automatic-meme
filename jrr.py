@@ -238,6 +238,13 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
 
     force_censor = bool(BAD_WORDS_PATTERN.search(full_content.replace(" ", "")))
 
+    # 💡 [여기서 즉시 삭제] 검열에 걸리면 AI 처리 전에 글부터 바로 지웁니다.
+    if force_censor:
+        try: 
+            await message.delete()
+        except Exception: 
+            pass
+
     try:
         if user_id not in user_conversations or not user_conversations[user_id]:
             user_conversations[user_id] = load_chat_history_from_db(user_id)
@@ -249,6 +256,7 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
                 reply = "방금 그 표현은 진짜 별로다. 나 상처받아, 다음부턴 절대 쓰지 마."
                 dynamic_prompt = LP_SYSTEM_PROMPT_BASE
             else:
+                # ... (이하 중략: 기존 장문/단문 조건문 코드 그대로 유지) ...
                 input_len = len(full_content)
                 if is_template:
                     length_instruction = "[★ 분량 제한 지침]\n유저가 소스코드나 템플릿을 보냈어! 릴파의 톤을 완벽히 유지하면서 줄바꿈 포함 총 4~5줄 내외의 완성된 문장들로 시원시원하게 핵심만 대답해줘."
