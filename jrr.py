@@ -242,4 +242,109 @@ async def on_message(message):
             await execute_spam_punishment(message, "내가 적당히 하라구 했지?! 30초 동안 벽 보고 반성하고 오기!!", ban_seconds=30)
             return
         elif user_spam_count[user_id] >= 5:
-            await message.channel.send("우와아아 진정해! ㅋㅋㅋ 숨 좀 쉬고 천
+            await message.channel.send("우와아아 진정해! ㅋㅋㅋ 숨 좀 쉬고 천천히 말해봐 돌멩아!")
+
+    # 🟢 [2단계: 정상 대화 처리반 - 안전하게 딜레이 버퍼 작동]
+    if user_id in user_buffer_tasks:
+        user_buffer_tasks[user_id].cancel()
+
+    user_buffer[user_id].append(content)
+    
+    # ⚙️ [디바운스 수정] 짧게 연타하는 글을 도배로 빼지 않고 잘 묶어주도록 대기 딜레이를 소폭 연장 (최소 2.2초 보장)
+    dynamic_delay = 1.0 if is_template else min(2.2 + (len(" ".join(user_buffer[user_id])) // 12) * 0.3, 6.0)
+    user_buffer_tasks[user_id] = asyncio.create_task(process_delayed_message(user_id, message, dynamic_delay, is_template))
+
+async def process_delayed_message(user_id, message, delay_time, is_template):
+    try: await asyncio.sleep(delay_time)
+    except asyncio.CancelledError: return
+
+    if user_id in user_buffer_tasks: del user_buffer_tasks[user_id]
+
+    full_content = " ".join(user_buffer[user_id]).strip()
+    user_buffer[user_id].clear()
+    if not full_content: return
+
+    user_last_full_content[user_id] = full_content
+    user_spam_count[user_id] = 0
+
+    force_censor = bool(BAD_WORDS_PATTERN.search(full_content.replace(" ", "")))
+
+    try:
+        if user_id not in user_conversations or not user_conversations[user_id]:
+            user_conversations[user_id] = load_chat_history_from_db(user_id)
+
+        history = user_conversations[user_id]
+
+        async with message.channel.typing():
+            if force_censor:
+                reply = "방금 그 표현은 진짜 별로다. 나 상처받아, 다음부턴 절대 쓰지 마."
+                dynamic_prompt = LP_SYSTEM_PROMPT_BASE
+                max_lines = 2
+            else:
+                input_len = len(full_content)
+                if is_template:
+                    length_instruction = "[★ 템플릿/코드 답변 지침]\n유저가 소스코드나 템플릿을 보냈어! 밴하지 말고 분석해주거나 쾌활하게 릴파 톤으로 의견을 말해줘. 릴파의 톤을 유지하면서 줄바꿈 포함 최대 4~5줄 내외로 시원시원하게 대답해봐!"
+                    max_lines = 5
+                elif input_len <= 15:
+                    length_instruction = "[★ 답변 길이 극소화 제한]\n유저가 매우 짧게 말했으니, 너도 무조건 줄바꿈 포함 딱 1~2줄(단문) 이내로만 아주 짧게 쾌활하게 대답해라."
+                    max_lines = 2
+                else:
+                    length_instruction = "[★ 답변 길이 간결 제한]\n유저가 간결하게 말했으니, 너도 줄바꿈 포함 최대 2~3줄 이내로 쳐지지 않게 대답해라."
+                    max_lines = 3
+
+                dynamic_prompt = LP_SYSTEM_PROMPT_BASE + length_instruction
+                
+                current_payload_contents = list(history) + [{"role": "user", "parts": [{"text": full_content}]}]
+                reply = await call_gemini_api(current_payload_contents, dynamic_prompt)
+            
+            if reply == "RATE_LIMIT_ERROR":
+                await message.channel.send("으아아악 코어가 전부 터졌어;; 미안미안! 5초만 쉬었다가 다시 말해줘!")
+                return
+
+            if reply and not force_censor:
+                # 한자 필터링
+                if HANJA_PATTERN.search(reply): 
+                    reply = HANJA_PATTERN.sub('', reply).strip()
+                
+                # ⚙️ [글자 짤림 버그 수정] 기존 정규식을 없애고 유니코드 이모지 영역만 문자열 깨짐 없이 안전하게 제거
+                if EMOJI_PATTERN.search(reply):
+                    reply = EMOJI_PATTERN.sub('', reply).strip()
+                    
+                if not reply: 
+                    reply = "방금 살짝 렉 걸려서 씹혔나 봐 ㅋㅋㅋ 다시 한 번만 얘기해줘 돌멩아!"
+
+        if reply:
+            if force_censor:
+                try: await message.delete()
+                except: pass
+
+            # ⚙️ [마지막 마디 잘림 수정] 줄바꿈 단위로 완전한 문장들을 안전하게 추출
+            final_messages = []
+            for line in reply.split('\n'):
+                cleaned_line = line.strip()
+                if cleaned_line and not cleaned_line.isspace():
+                    final_messages.append(cleaned_line)
+            
+            final_messages = final_messages[:max_lines] if len(final_messages) >= max_lines else final_messages
+            
+            for idx, msg_content in enumerate(final_messages):
+                if msg_content:
+                    await message.channel.send(msg_content)
+                    if idx < len(final_messages) - 1: await asyncio.sleep(0.5)
+            
+            if not force_censor:
+                history.append({"role": "user", "parts": [{"text": full_content}]})
+                history.append({"role": "model", "parts": [{"text": reply}]})
+                save_chat_msg_to_db(user_id, "user", full_content)
+                save_chat_msg_to_db(user_id, "assistant", reply)
+                
+                if len(history) > MAX_MEMORY * 2:
+                    user_conversations[user_id] = history[-MAX_MEMORY * 2:]
+        else:
+            await message.channel.send("아라라? 방금 디코 버그 걸렸나 봐 ㅋㅋㅋ 다시 보내줘!")
+
+    except Exception as e:
+        print(f"에러 로그: {e}")
+        await message.channel.send("왐마야, 지금 잠시 렉 걸렸나 봐! 미안미안, 다시 한번만 말 걸어줘!")
+
+client.run(DISCORD_TOKEN)
