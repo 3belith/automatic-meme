@@ -282,7 +282,32 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
                 if not reply: 
                     reply = "방금 살짝 렉 걸려서 씹혔나 봐 ㅋㅋㅋ 다시 한 번만 얘기해줘 돌멩아!"
 
+        
         if reply:
+            # 💡 [여기에 추가] AI가 정색 대사를 뱉었는지 감지하는 시스템
+            ai_censor_detected = any(
+                phrase in reply 
+                for phrase in ["선 넘은 것 같아", "방금 그 표현은 진짜 별로다", "나 상처받아"]
+            )
+
+            # AI가 정색했거나, 시스템이 강제 검열했을 경우 유저 메시지 즉시 폭파
+            if force_censor or ai_censor_detected:
+                try: 
+                    await message.delete()
+                except Exception: 
+                    pass
+
+            # 기존 대사 쪼개기 및 전송 로직 이어짐
+            final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
+            num_chunks = len(final_messages)
+            dynamic_sleep = calculate_dynamic_delay(reply, num_chunks)
+            
+            for idx, msg_content in enumerate(final_messages):
+                if msg_content:
+                    await message.channel.send(msg_content)
+                    if idx < num_chunks - 1:
+                        await asyncio.sleep(dynamic_sleep)
+
             if force_censor:
                 try: await message.delete()
                 except: pass
