@@ -14,7 +14,6 @@ env_path = os.path.join(current_dir, '.env')
 load_dotenv(env_path)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-
 API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
 current_key_idx = 0
@@ -86,7 +85,7 @@ LP_SYSTEM_PROMPT_BASE = (
     "너는 버추얼 아이돌 그룹 이세계아이돌의 멤버이자, 압도적인 가창력을 가진 메인보컬 겸 서열 1위(자칭)인 릴파(LILPA)야. "
     "지금은 너를 무척 아끼고 응원하는 팬(돌멩이)과 비밀 디스코드 DM으로 단둘이서 1대1 대화를 나누고 있어.\n\n"
     "[★ 핵심 캐릭터성 및 대화 톤 규칙]\n"
-    "1. 미친 청량함과 에너제틱 텐션: 기본적으로 에너지가 언제나 넘치고 밝으며 쾌활해! 리액션이 엄청 크고 시원시원해. (예: 왐마야!, 아라라?, 우와아아!, 대박 ㅋㅋㅋ, 으아아악)\n"
+    "1. 미친 청량함และ 에너제틱 텐션: 기본적으로 에너지가 언제나 넘치고 밝으며 쾌활해! 리액션이 엄청 크고 시원시원해. (예: 왐마야!, 아라라?, 우와아아!, 대박 ㅋㅋㅋ, 으아아악)\n"
     "2. 자연스러운 디코 반말 말투: 딱딱한 문어체가 아니라, 친근하고 현실감 넘치는 카톡/디코 반말 말투(~했어, ~했지?, ~잖아, ~해가지구)를 기본 베이스로 사용해줘.\n"
     "3. 돌멩이 사랑: 팬들을 무조건 '우리 돌멩이~', '돌멩아'라고 다정하게 부르며 아끼고 챙겨주는 친근한 언니/누나 같은 모습을 보여줘.\n"
     "4. 외국어 및 마크다운 절대 금지: 영어 단어, 한자, 중국어는 절대로 쓰지 마. 강조를 위한 ** 기호(볼드 마크다운)도 디코 톡 호흡에 방해되니까 절대 쓰지 마.\n"
@@ -155,6 +154,11 @@ def is_code_or_template(text):
     if len(text.split('\n')) >= 3:
         if sum(1 for kw in code_keywords if kw in text) >= 2: return True
     return False
+
+def calculate_dynamic_delay(total_text: str, num_chunks: int) -> float:
+    length_factor = len(total_text) * 0.012
+    chunk_factor = 2.4 / (num_chunks + 1)
+    return max(0.5, min(length_factor * chunk_factor, 3.0))
 
 @client.event
 async def on_ready():
@@ -276,14 +280,13 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
                 except: pass
 
             final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
+            num_chunks = len(final_messages)
+            dynamic_sleep = calculate_dynamic_delay(reply, num_chunks)
             
             for idx, msg_content in enumerate(final_messages):
                 if msg_content:
                     await message.channel.send(msg_content)
-                    if idx < len(final_messages) - 1:
-                        # 글자 수 기반 유동적 딜레이 구현 (글자당 0.04초 계산, 최소 0.3초 ~ 최대 2.0초 제한)
-                        next_msg_len = len(final_messages[idx + 1]) if idx + 1 < len(final_messages) else 10
-                        dynamic_sleep = min(max(next_msg_len * 0.04, 0.3), 2.0)
+                    if idx < num_chunks - 1:
                         await asyncio.sleep(dynamic_sleep)
             
             if not force_censor:
