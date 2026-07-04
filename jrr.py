@@ -9,21 +9,14 @@ import aiohttp
 from dotenv import load_dotenv
 from collections import defaultdict
 
-# 환경 변수 로드
 current_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(current_dir, '.env')
 load_dotenv(env_path)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-# [🔥 6중 코어 시스템] API 키 배열 로드
 API_KEYS = [
-    os.getenv("GEMINI_API_KEY_1"),
-    os.getenv("GEMINI_API_KEY_2"),
-    os.getenv("GEMINI_API_KEY_3"),
-    os.getenv("GEMINI_API_KEY_4"),
-    os.getenv("GEMINI_API_KEY_5"),
-    os.getenv("GEMINI_API_KEY_6")
+    os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)
 ]
 API_KEYS = [k for k in API_KEYS if k]
 current_key_idx = 0
@@ -33,28 +26,21 @@ intents.message_content = True
 intents.members = True
 client = discord.Client(intents=intents)
 
-# 메모리 최적화 (기록 단 3턴만 유지하여 토큰 폭발 방지)
 user_conversations = defaultdict(list)
 MAX_MEMORY = 3 
 
-# 상태 변수 및 버퍼 시스템
 user_last_msg_time = {}
 user_spam_count = defaultdict(int)
 user_buffer = defaultdict(list)
 user_buffer_tasks = {}
-user_last_full_content = {}  # 유저가 마지막으로 보낸 최종 문장 기억
+user_last_full_content = {}  
 
-# 답변 정제용 정규식 (한자 및 유니코드 이모지 청소)
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 EMOJI_PATTERN = re.compile(r'[\U00010000-\U0010FFFF]', flags=re.UNICODE)
-
-# 🚫 [비속어 / 필터링 우회 탐지 정규식]
 BAD_WORDS_PATTERN = re.compile(
-    r'(패드립|느금|느엄|시발|씨발|새끼|존나|좆|개새끼|지랄|병신|호로|창년|창녀|씹|ㅅㅂ|ㅂㅅ|ㄷㅊ|ㄲㅈ|ㅗ|凸|시\.발|씨\.발|존\.나|시~발|병~신)', 
+    r'(패드립|느금|느엄|시발|씨발|새끼|존나|지랄|병신|호로|창년|창녀|ㅅㅂ|ㅂㅅ|ㄷㅊ|ㄲㅈ|시\.발|씨\.발|존\.나|시~발|병~신|\b좆\b|\b씹\b)', 
     re.IGNORECASE
 )
-
-# 🚫 [연속 글자 노가다 도배 매칭 정규식]
 REPETITIVE_PATTERN = re.compile(r'(.)\1{5,}')
 
 DB_PATH = os.path.join(current_dir, 'lilpa_memory.db')
@@ -62,58 +48,50 @@ api_semaphore = asyncio.Semaphore(1)
 LAST_API_CALL_TIME = 0.0
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=OFF;")
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            role TEXT,
-            content TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA synchronous=OFF;")
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                role TEXT,
+                content TEXT
+            )
+        ''')
+        conn.commit()
 
 def load_chat_history_from_db(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT role, content FROM chat_history 
-        WHERE user_id = ? 
-        ORDER BY id DESC LIMIT ?
-    ''', (str(user_id), MAX_MEMORY * 2))
-    rows = cursor.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT role, content FROM chat_history 
+            WHERE user_id = ? 
+            ORDER BY id DESC LIMIT ?
+        ''', (str(user_id), MAX_MEMORY * 2))
+        rows = cursor.fetchall()
     
-    history = []
-    for role, content in reversed(rows):
-        g_role = "user" if role == "user" else "model"
-        history.append({"role": g_role, "parts": [{"text": content}]})
-    return history
+    return [{"role": "user" if r == "user" else "model", "parts": [{"text": c}]} for r, c in reversed(rows)]
 
 def save_chat_msg_to_db(user_id, role, content):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)', (str(user_id), role, content))
-    cursor.execute('''
-        DELETE FROM chat_history WHERE id NOT IN (
-            SELECT id FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT 12
-        ) AND user_id = ?
-    ''', (str(user_id), str(user_id)))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)', (str(user_id), role, content))
+        cursor.execute('''
+            DELETE FROM chat_history WHERE id NOT IN (
+                SELECT id FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT 12
+            ) AND user_id = ?
+        ''', (str(user_id), str(user_id)))
+        conn.commit()
 
-# 🎤 릴파 정체성 형성 시스템 프롬프트
 LP_SYSTEM_PROMPT_BASE = (
     "너는 버추얼 아이돌 그룹 이세계아이돌의 멤버이자, 압도적인 가창력을 가진 메인보컬 겸 서열 1위(자칭)인 릴파(LILPA)야. "
     "지금은 너를 무척 아끼고 응원하는 팬(돌멩이)과 비밀 디스코드 DM으로 단둘이서 1대1 대화를 나누고 있어.\n\n"
     "[★ 핵심 캐릭터성 및 대화 톤 규칙]\n"
-    "1. 미친 청량함과 에너제틱 텐션: 기본적으로 에너지가 언제나 넘치고 밝으며 쾌활해! 리액션이 엄청 크고 시원시원해. (예: 왐마야!, 아라라?, 우와아아!, 대박 ㅋㅋㅋ, 으아아악)\n"
+    "1. 미친 청량함และ 에너제틱 텐션: 기본적으로 에너지가 언제나 넘치고 밝으며 쾌활해! 리액션이 엄청 크고 시원시원해. (예: 왐마야!, 아라라?, 우와아아!, 대박 ㅋㅋㅋ, 으아아악)\n"
     "2. 자연스러운 디코 반말 말투: 딱딱한 문어체가 아니라, 친근하고 현실감 넘치는 카톡/디코 반말 말투(~했어, ~했지?, ~잖아, ~해가지구)를 기본 베이스로 사용해줘.\n"
-    "3. 돌멩이 사랑: 팬들을 무조건 '우리 돌멩이~', '돌멩아'라고 다정하게 부르며 아끼고 챙겨주는 친근 한 언니/누나 같은 모습을 보여줘.\n"
+    "3. 돌멩이 사랑: 팬들을 무조건 '우리 돌멩이~', '돌멩아'라고 다정하게 부르며 아끼고 챙겨주는 친근한 언니/누나 같은 모습을 보여줘.\n"
     "4. 외국어 및 마크다운 절대 금지: 영어 단어, 한자, 중국어는 절대로 쓰지 마. 강조를 위한 ** 기호(볼드 마크다운)도 디코 톡 호흡에 방해되니까 절대 쓰지 마.\n"
     "5. 끊어 치기 톡 호흡 구현: 답변을 한 문단으로 길게 뭉쳐 쓰지 말고, 문장을 줄바꿈(\\n)으로 쪼개서 스마트폰으로 연달아 톡을 보내듯 생동감 있게 연출해줘.\n"
     "6. ⚠️ [필독] 이모지 및 특수문자 그림문자 절대 금지: 그림 이모지(✨, 😂, 👍 등)나 텍스트형 이모티콘(ㅠㅠ, ㅠ_ㅠ, ^_^, -_- 등)은 절대 생성하지 마. 오직 자연스러운 텍스트와 'ㅋㅋㅋ', 'ㅎㅎ'로만 감정과 텐션을 표현해줘.\n\n"
@@ -154,19 +132,16 @@ async def call_gemini_api(contents, dynamic_instruction):
                         try: return res_json['candidates'][0]['content']['parts'][0]['text'].strip()
                         except: return ""
                     elif response.status == 429:
-                        print(f"⚠️ 코어 {current_key_idx}번 429 에러. 즉시 우회합니다.")
                         continue
         return "RATE_LIMIT_ERROR"
-    except Exception as e:
-        print(f"API 내부 에러: {e}")
+    except Exception:
         return ""
     finally:
         api_semaphore.release()
 
-# 🚫 [도배 빌런 즉시 처단 함수]
 async def execute_spam_punishment(message, reason_msg, ban_seconds=3):
     try: await message.delete()
-    except Exception as e: print(f"메시지 삭제 실패: {e}")
+    except Exception: pass
 
     if isinstance(message.author, discord.Member):
         try:
@@ -177,7 +152,6 @@ async def execute_spam_punishment(message, reason_msg, ban_seconds=3):
     else:
         await message.channel.send(reason_msg)
 
-# 💡 [코드/템플릿 복사 검출기]
 def is_code_or_template(text):
     if '```' in text: return True
     code_keywords = ['import ', 'def ', 'class ', 'return ', 'public static void', 'const ', 'let ', 'function', 'import {', '<html>', 'json', '={', ':#', 'discord.']
@@ -188,7 +162,7 @@ def is_code_or_template(text):
 @client.event
 async def on_ready():
     init_db()
-    print(f"가동 완료 (⚡ 중복 제거 및 최적화 통합 완비): {client.user.name}")
+    print(f"가동 완료: {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -200,11 +174,9 @@ async def on_message(message):
     current_time = time.time()
     is_template = is_code_or_template(content)
     
-    # 🚨 [1단계: 실시간 레이더망 검사 - 매칭 시 즉시 차단]
     if not is_template:
         cleaned_space = content.replace(" ", "")
 
-        # 1. 앵무새 복붙 도배 즉시 컷
         if user_id in user_last_full_content:
             if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
                 if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
@@ -217,7 +189,6 @@ async def on_message(message):
                     await execute_spam_punishment(message, "야아아, 똑같은 말 계속 복붙해서 도배하지 마라구 ㅋㅋㅋ 앵무새야 뭐야~!", ban_seconds=3)
                 return
 
-        # 2. 의미 없는 단일 글자 노가다 분탕 컷
         if len(cleaned_space) >= 10:
             if len(set(cleaned_space)) / len(cleaned_space) < 0.35 or REPETITIVE_PATTERN.search(cleaned_space):
                 if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
@@ -226,7 +197,6 @@ async def on_message(message):
                 await execute_spam_punishment(message, "아라라, 무지성 글자 도배는 안 돼! 나 눈 아프단 말이야아~!", ban_seconds=3)
                 return
 
-        # 3. 초고속 무지성 연타 도배 누적치 계산 (정상 연타 메시지를 고려하여 도배 스택 기준 마진 확대)
         if user_id in user_buffer[user_id] and len(content) > 3:
             user_spam_count[user_id] += 2
 
@@ -244,13 +214,11 @@ async def on_message(message):
         elif user_spam_count[user_id] >= 5:
             await message.channel.send("우와아아 진정해! ㅋㅋㅋ 숨 좀 쉬고 천천히 말해봐 돌멩아!")
 
-    # 🟢 [2단계: 정상 대화 처리반 - 안전하게 딜레이 버퍼 작동]
     if user_id in user_buffer_tasks:
         user_buffer_tasks[user_id].cancel()
 
     user_buffer[user_id].append(content)
     
-    # ⚙️ [디바운스 수정] 짧게 연타하는 글을 도배로 빼지 않고 잘 묶어주도록 대기 딜레이를 소폭 연장 (최소 2.2초 보장)
     dynamic_delay = 1.0 if is_template else min(2.2 + (len(" ".join(user_buffer[user_id])) // 12) * 0.3, 6.0)
     user_buffer_tasks[user_id] = asyncio.create_task(process_delayed_message(user_id, message, dynamic_delay, is_template))
 
@@ -279,7 +247,7 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
             if force_censor:
                 reply = "방금 그 표현은 진짜 별로다. 나 상처받아, 다음부턴 절대 쓰지 마."
                 dynamic_prompt = LP_SYSTEM_PROMPT_BASE
-                max_lines = 2
+                max_lines = 999  
             else:
                 input_len = len(full_content)
                 if is_template:
@@ -302,14 +270,10 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
                 return
 
             if reply and not force_censor:
-                # 한자 필터링
                 if HANJA_PATTERN.search(reply): 
                     reply = HANJA_PATTERN.sub('', reply).strip()
-                
-                # ⚙️ [글자 짤림 버그 수정] 기존 정규식을 없애고 유니코드 이모지 영역만 문자열 깨짐 없이 안전하게 제거
                 if EMOJI_PATTERN.search(reply):
                     reply = EMOJI_PATTERN.sub('', reply).strip()
-                    
                 if not reply: 
                     reply = "방금 살짝 렉 걸려서 씹혔나 봐 ㅋㅋㅋ 다시 한 번만 얘기해줘 돌멩아!"
 
@@ -318,14 +282,8 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
                 try: await message.delete()
                 except: pass
 
-            # ⚙️ [마지막 마디 잘림 수정] 줄바꿈 단위로 완전한 문장들을 안전하게 추출
-            final_messages = []
-            for line in reply.split('\n'):
-                cleaned_line = line.strip()
-                if cleaned_line and not cleaned_line.isspace():
-                    final_messages.append(cleaned_line)
-            
-            final_messages = final_messages[:max_lines] if len(final_messages) >= max_lines else final_messages
+            final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
+            final_messages = final_messages[:max_lines]
             
             for idx, msg_content in enumerate(final_messages):
                 if msg_content:
@@ -343,8 +301,7 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
         else:
             await message.channel.send("아라라? 방금 디코 버그 걸렸나 봐 ㅋㅋㅋ 다시 보내줘!")
 
-    except Exception as e:
-        print(f"에러 로그: {e}")
+    except Exception:
         await message.channel.send("왐마야, 지금 잠시 렉 걸렸나 봐! 미안미안, 다시 한번만 말 걸어줘!")
 
 client.run(DISCORD_TOKEN)
