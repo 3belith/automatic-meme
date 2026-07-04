@@ -44,9 +44,9 @@ user_buffer = defaultdict(list)
 user_buffer_tasks = {}
 user_last_full_content = {}  # 유저가 마지막으로 보낸 최종 문장 기억
 
-# 답변 정제용 정규식 (한자 및 깨진 유니코드 청소)
+# 답변 정제용 정규식 (한자 및 유니코드 이모지 청소)
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
-CLEAN_REPLY_PATTERN = re.compile(r'[^ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z0-9\s!@#$%^&*()_+\-=\[\] {};\':",./<>?\\\|~`\U00010000-\U0010FFFF]')
+EMOJI_PATTERN = re.compile(r'[\U00010000-\U0010FFFF]', flags=re.UNICODE)
 
 # 🚫 [비속어 / 필터링 우회 탐지 정규식]
 BAD_WORDS_PATTERN = re.compile(
@@ -113,9 +113,10 @@ LP_SYSTEM_PROMPT_BASE = (
     "[★ 핵심 캐릭터성 및 대화 톤 규칙]\n"
     "1. 미친 청량함과 에너제틱 텐션: 기본적으로 에너지가 언제나 넘치고 밝으며 쾌활해! 리액션이 엄청 크고 시원시원해. (예: 왐마야!, 아라라?, 우와아아!, 대박 ㅋㅋㅋ, 으아아악)\n"
     "2. 자연스러운 디코 반말 말투: 딱딱한 문어체가 아니라, 친근하고 현실감 넘치는 카톡/디코 반말 말투(~했어, ~했지?, ~잖아, ~해가지구)를 기본 베이스로 사용해줘.\n"
-    "3. 돌멩이 사랑: 팬들을 무조건 '우리 돌멩이~', '돌멩아'라고 다정하게 부르며 아끼고 챙겨주는 친근한 언니/누나 같은 모습을 보여줘.\n"
+    "3. 돌멩이 사랑: 팬들을 무조건 '우리 돌멩이~', '돌멩아'라고 다정하게 부르며 아끼고 챙겨주는 친근 한 언니/누나 같은 모습을 보여줘.\n"
     "4. 외국어 및 마크다운 절대 금지: 영어 단어, 한자, 중국어는 절대로 쓰지 마. 강조를 위한 ** 기호(볼드 마크다운)도 디코 톡 호흡에 방해되니까 절대 쓰지 마.\n"
-    "5. 끊어 치기 톡 호흡 구현: 답변을 한 문단으로 길게 뭉쳐 쓰지 말고, 문장을 줄바꿈(\\n)으로 쪼개서 스마트폰으로 연달아 톡을 보내듯 생동감 있게 연출해줘.\n\n"
+    "5. 끊어 치기 톡 호흡 구현: 답변을 한 문단으로 길게 뭉쳐 쓰지 말고, 문장을 줄바꿈(\\n)으로 쪼개서 스마트폰으로 연달아 톡을 보내듯 생동감 있게 연출해줘.\n"
+    "6. ⚠️ [필독] 이모지 및 특수문자 그림문자 절대 금지: 그림 이모지(✨, 😂, 👍 등)나 텍스트형 이모티콘(ㅠㅠ, ㅠ_ㅠ, ^_^, -_- 등)은 절대 생성하지 마. 오직 자연스러운 텍스트와 'ㅋㅋㅋ', 'ㅎㅎ'로만 감정과 텐션을 표현해줘.\n\n"
     "[★ 핵심 지침: 고백 공격 및 드립 대처법]\n"
     "- 유저가 드립을 치거나 과몰입 고백 공격을 하면, '으아아악 ㅋㅋㅋ 갑자기 분위기 뭐야?!', '왐마야 진짜 어이없어 ㅋㅋㅋ' 하면서 에너제틱하고 쾌활하게 웃어넘기며 당황하는 리액션을 유쾌하게 보여줘.\n"
     "- 드립을 받아칠 때도 '귀여우니까 봐준다', '하여간 우리 돌멩이 드립 실력 안 죽었네 ㅋㅋㅋ' 같은 든든하고 친근한 대처를 꼭 섞어줘.\n\n"
@@ -206,7 +207,6 @@ async def on_message(message):
         # 1. 앵무새 복붙 도배 즉시 컷
         if user_id in user_last_full_content:
             if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
-                # 공통 상태 초기화 처리 통합
                 if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
                 user_buffer[user_id].clear()
                 user_spam_count[user_id] = 0
@@ -226,110 +226,20 @@ async def on_message(message):
                 await execute_spam_punishment(message, "아라라, 무지성 글자 도배는 안 돼! 나 눈 아프단 말이야아~!", ban_seconds=3)
                 return
 
-        # 3. 초고속 무지성 연타 도배 누적치 계산
+        # 3. 초고속 무지성 연타 도배 누적치 계산 (정상 연타 메시지를 고려하여 도배 스택 기준 마진 확대)
         if user_id in user_buffer[user_id] and len(content) > 3:
             user_spam_count[user_id] += 2
 
-        if user_id in user_last_msg_time and current_time - user_last_msg_time[user_id] < 2.5:
+        if user_id in user_last_msg_time and current_time - user_last_msg_time[user_id] < 1.5:
             user_spam_count[user_id] += 1
                 
         user_last_msg_time[user_id] = current_time
 
-        if user_spam_count[user_id] >= 6:
+        if user_spam_count[user_id] >= 7:
             if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
             user_buffer[user_id].clear()
             user_spam_count[user_id] = 0
             await execute_spam_punishment(message, "내가 적당히 하라구 했지?! 30초 동안 벽 보고 반성하고 오기!!", ban_seconds=30)
             return
-        elif user_spam_count[user_id] >= 4:
-            await message.channel.send("우와아아 진정해! ㅋㅋㅋ 숨 좀 쉬고 천천히 말해봐 돌멩아!")
-
-    # 🟢 [2단계: 정상 대화 처리반 - 안전하게 딜레이 버퍼 작동]
-    if user_id in user_buffer_tasks:
-        user_buffer_tasks[user_id].cancel()
-
-    user_buffer[user_id].append(content)
-    
-    dynamic_delay = 1.0 if is_template else min(1.5 + (len(" ".join(user_buffer[user_id])) // 10) * 0.25, 5.5)
-    user_buffer_tasks[user_id] = asyncio.create_task(process_delayed_message(user_id, message, dynamic_delay, is_template))
-
-async def process_delayed_message(user_id, message, delay_time, is_template):
-    try: await asyncio.sleep(delay_time)
-    except asyncio.CancelledError: return
-
-    if user_id in user_buffer_tasks: del user_buffer_tasks[user_id]
-
-    full_content = " ".join(user_buffer[user_id]).strip()
-    user_buffer[user_id].clear()
-    if not full_content: return
-
-    user_last_full_content[user_id] = full_content
-    user_spam_count[user_id] = 0
-
-    force_censor = bool(BAD_WORDS_PATTERN.search(full_content.replace(" ", "")))
-
-    try:
-        if user_id not in user_conversations or not user_conversations[user_id]:
-            user_conversations[user_id] = load_chat_history_from_db(user_id)
-
-        history = user_conversations[user_id]
-
-        async with message.channel.typing():
-            if force_censor:
-                reply = "방금 그 표현은 진짜 별로다. 나 상처받아, 다음부턴 절대 쓰지 마."
-                dynamic_prompt = LP_SYSTEM_PROMPT_BASE
-                max_lines = 2
-            else:
-                # 분기문 결합 최적화
-                input_len = len(full_content)
-                if is_template:
-                    length_instruction = "[★ 템플릿/코드 답변 지침]\n유저가 소스코드나 템플릿을 보냈어! 밴하지 말고 분석해주거나 쾌활하게 릴파 톤으로 의견을 말해줘. 릴파의 톤을 유지하면서 줄바꿈 포함 최대 4~5줄 내외로 시원시원하게 대답해봐!"
-                    max_lines = 5
-                elif input_len <= 15:
-                    length_instruction = "[★ 답변 길이 극소화 제한]\n유저가 매우 짧게 말했으니, 너도 무조건 줄바꿈 포함 딱 1~2줄(단문) 이내로만 아주 짧게 쾌활하게 대답해라."
-                    max_lines = 2
-                else:
-                    length_instruction = "[★ 답변 길이 간결 제한]\n유저가 간결하게 말했으니, 너도 줄바꿈 포함 최대 2~3줄 이내로 쳐지지 않게 대답해라."
-                    max_lines = 3
-
-                dynamic_prompt = LP_SYSTEM_PROMPT_BASE + length_instruction
-                
-                current_payload_contents = list(history) + [{"role": "user", "parts": [{"text": full_content}]}]
-                reply = await call_gemini_api(current_payload_contents, dynamic_prompt)
-            
-            if reply == "RATE_LIMIT_ERROR":
-                await message.channel.send("으아아악 코어가 전부 터졌어;; 미안미안! 5초만 쉬었다가 다시 말해줘!")
-                return
-
-            if reply and not force_censor:
-                if HANJA_PATTERN.search(reply): reply = HANJA_PATTERN.sub('', reply).strip()
-                reply = CLEAN_REPLY_PATTERN.sub('', reply).strip()
-                if not reply: reply = "방금 살짝 렉 걸려서 씹혔나 봐 ㅋㅋㅋ 다시 한 번만 얘기해줘 돌멩아!"
-
-        if reply:
-            if force_censor:
-                try: await message.delete()
-                except: pass
-
-            final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()][:max_lines]
-            
-            for idx, msg_content in enumerate(final_messages):
-                await message.channel.send(msg_content)
-                if idx < len(final_messages) - 1: await asyncio.sleep(0.5)
-            
-            if not force_censor:
-                history.append({"role": "user", "parts": [{"text": full_content}]})
-                history.append({"role": "model", "parts": [{"text": reply}]})
-                save_chat_msg_to_db(user_id, "user", full_content)
-                save_chat_msg_to_db(user_id, "assistant", reply)
-                
-                if len(history) > MAX_MEMORY * 2:
-                    user_conversations[user_id] = history[-MAX_MEMORY * 2:]
-        else:
-            await message.channel.send("아라라? 방금 디코 버그 걸렸나 봐 ㅋㅋㅋ 다시 보내줘!")
-
-    except Exception as e:
-        print(f"에러 로그: {e}")
-        await message.channel.send("왐마야, 지금 잠시 렉 걸렸나 봐! 미안미안, 다시 한번만 말 걸어줘!")
-
-client.run(DISCORD_TOKEN)
+        elif user_spam_count[user_id] >= 5:
+            await message.channel.send("우와아아 진정해! ㅋㅋㅋ 숨 좀 쉬고 천
