@@ -17,7 +17,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
 
-# 시스템 프롬프트 (릴파 페르소나 복구)
+# 시스템 프롬프트 (원형 유지)
 LP_SYSTEM_PROMPT = """
 너는 이세계아이돌의 메인보컬 '릴파'야. 
 [릴파의 정체성]
@@ -36,7 +36,6 @@ LP_SYSTEM_PROMPT = """
 - 모든 대답은 릴파의 페르소나 안에서 이루어져야 하며, AI임을 드러내지 마.
 """
 
-# 디스코드 클라이언트 정의
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
@@ -44,13 +43,14 @@ client = discord.Client(intents=intents)
 async def call_gemini_api(content):
     if not API_KEYS: return "ERR_NO_KEYS"
     
-    url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent"
+    # 400 에러 방지를 위해 systemInstruction(카멜케이스)을 사용하고 v1beta 경로로 확정
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
     
     for current_key in API_KEYS:
         full_url = f"{url}?key={current_key}"
         payload = {
             "contents": [{"role": "user", "parts": [{"text": content}]}],
-            "system_instruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
+            "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
         }
         
         async with aiohttp.ClientSession() as session:
@@ -61,7 +61,7 @@ async def call_gemini_api(content):
                         return data['candidates'][0]['content']['parts'][0]['text']
                     else:
                         error_text = await resp.text()
-                        logger.warning(f"Key {current_key[-4:]} failed with status {resp.status}. Detail: {error_text}")
+                        logger.warning(f"Key {current_key[-4:]} failed. Status: {resp.status}. Detail: {error_text}")
                         continue 
             except Exception as e:
                 logger.error(f"Connection error: {e}")
