@@ -6,6 +6,7 @@ import re
 import sqlite3
 import discord
 import aiohttp
+import traceback
 from dotenv import load_dotenv
 from collections import defaultdict
 
@@ -71,13 +72,15 @@ def save_chat_msg_to_db(user_id, role, content):
     with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
         cursor = conn.cursor()
         cursor.execute('INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)', (str(user_id), role, content))
-        # 💡 [메모리 확장] DB 보관 한도를 12개에서 24개로 늘려 메모리 유실 방지
-        cursor.execute('''
-            DELETE FROM chat_history WHERE id NOT IN (
-                SELECT id FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT 24
-            ) AND user_id = ?
-        ''', (str(user_id), str(user_id)))
         conn.commit()
+        
+        # 💡 [호환성 개선] SQLite 버전에 상관없이 작동하도록 파이썬에서 DB 개수 계산 후 안전하게 삭제
+        cursor.execute('SELECT id FROM chat_history WHERE user_id = ? ORDER BY id DESC', (str(user_id),))
+        rows = cursor.fetchall()
+        if len(rows) > 24:
+            oldest_id_to_keep = rows[23][0] # 24번째 데이터를 넘어가면 그 이전 데이터는 전부 정리
+            cursor.execute('DELETE FROM chat_history WHERE user_id = ? AND id < ?', (str(user_id), oldest_id_to_keep))
+            conn.commit()
 
 LP_SYSTEM_PROMPT_BASE = (
     "너는 버추얼 아이돌 그룹 이세계아이돌의 멤버이자, 압도적인 가창력을 가진 메인보컬 겸 서열 1위(자칭)인 릴파(LILPA)야. "
@@ -290,13 +293,17 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
             save_chat_msg_to_db(user_id, "user", full_content)
             save_chat_msg_to_db(user_id, "assistant", reply)
             
-            # 💡 [메모리 확장] 늘어난 MAX_MEMORY에 맞게 리스트 슬라이싱 범위를 동적으로 조절
             if len(history) > MAX_MEMORY * 2:
                 user_conversations[user_id] = history[-MAX_MEMORY * 2:]
         else:
             await message.channel.send("아라라? 방금 디코 버그 걸렸나 봐 ㅋㅋㅋ 다시 보내줘!")
 
     except Exception:
+        # 💡 혹시라도 예외가 발생할 경우, 콘솔에 에러의 세부 내역을 확실하게 출력합니다.
+        print("\n" + "="*50)
+        print("릴파 봇 내부 에러(Exception) 발생!")
+        traceback.print_exc()
+        print("="*50 + "\n")
         await message.channel.send("왐마야, 지금 잠시 렉 걸렸나 봐! 미안미안, 다시 한번만 말 걸어줘!")
 
 client.run(DISCORD_TOKEN)
