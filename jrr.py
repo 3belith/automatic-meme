@@ -43,7 +43,7 @@ client = discord.Client(intents=intents)
 async def call_gemini_api(content):
     if not API_KEYS: return "ERR_NO_KEYS"
     
-    # 400 에러 방지를 위해 systemInstruction(카멜케이스)을 사용하고 v1beta 경로로 확정
+    # 404 에러 방지를 위해 모델 경로를 명확히 지정
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
     
     for current_key in API_KEYS:
