@@ -37,18 +37,18 @@ processed_msg_ids = deque(maxlen=100)
 
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 EMOJI_PATTERN = re.compile(r'[\U00010000-\U0010FFFF]', flags=re.UNICODE)
-REPETITIVE_PATTERN = re.compile(r'(.)\1{5,}')
+REPETITIVE_PATTERN = re.compile(r'(.)\1{7,}')
 
 DB_PATH = os.path.join(current_dir, 'lilpa_memory.db')
 api_semaphore = asyncio.Semaphore(1)
 LAST_API_CALL_TIME = 0.0
-http_session = None  # 전역 HTTP 세션 풀링을 위한 변수
+http_session = None
 
 def init_db():
     with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
-        cursor.execute("PRAGMA synchronous=OFF;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,7 +110,6 @@ async def call_gemini_api(contents, dynamic_instruction):
     
     await api_semaphore.acquire()
     try:
-        # 락 내부에서 정밀한 순차 딜레이 보장으로 레이트 리밋 완벽 방어
         time_since_last_call = time.time() - LAST_API_CALL_TIME
         if time_since_last_call < 2.0:
             await asyncio.sleep(2.0 - time_since_last_call)
@@ -125,7 +124,10 @@ async def call_gemini_api(contents, dynamic_instruction):
             payload = {
                 "contents": contents,
                 "systemInstruction": {"parts": [{"text": dynamic_instruction}]},
-                "generationConfig": { "temperature": 0.88, "maxOutputTokens": 400 }
+                "generationConfig": { 
+                    "temperature": 0.88, 
+                    "maxOutputTokens": 1200  # 💡 [토큰 한도 확장] 한글 말잘림 방지를 위해 한도를 1200으로 크게 상향
+                }
             }
             
             try:
@@ -150,11 +152,23 @@ async def execute_spam_punishment(message, reason_msg, ban_seconds=3):
     if isinstance(author, discord.Member):
         try:
             await author.timeout(timedelta(seconds=ban_seconds), reason="릴파 봇 실시간 도배 처단")
-            await message.channel.send(f"{author.mention} {reason_msg} (도배 즉시 삭제 완료, {ban_seconds}초 밴!)")
+            # 릴파 말투 대사로 완전히 변경! (마크다운 볼드 기호 금지, 이모지 금지, ㅋㅋㅋ/ㅎㅎ 적극 사용)
+            await message.channel.send(
+                f"{author.mention} 돌멩아!\n"
+                f"왐마야 진짜 깜짝 놀랐잖아 ㅋㅋㅋ\n"
+                f"{reason_msg}\n"
+                f"너 방금 도배한 거 내가 싹 지웠으니까\n"
+                f"딱 {ban_seconds}초 동안 조용히 반성하구 다시 와라! ㅎㅎ"
+            )
             return
         except discord.Forbidden:
             pass
-    await message.channel.send(f"원래 같으면 {ban_seconds}초 밴인데 내 서열이 밀려서 참는다! 아무튼 {reason_msg}")
+    await message.channel.send(
+        f"{author.mention} 돌멩아!\n"
+        f"원래 같으면 딱 {ban_seconds}초 동안 조용히 반성방 보냈을 텐데\n"
+        f"내가 아직 디코방 서열이 밀려가지구 참는 거야 ㅋㅋㅋ\n"
+        f"아무튼 {reason_msg}"
+    )
 
 def is_code_or_template(text):
     if '```' in text: 
@@ -166,7 +180,6 @@ def is_code_or_template(text):
     return False
 
 def calculate_dynamic_delay(total_text: str, num_chunks: int) -> float:
-    # 수식 최적화 및 간결화 완료
     return max(0.5, min(len(total_text) * 0.012 * (2.4 / (num_chunks + 1)), 3.0))
 
 @client.event
@@ -187,9 +200,8 @@ async def on_message(message):
     if not is_template:
         cleaned_space = content.replace(" ", "")
 
-        # 동일 메시지 연속 복붙 뇌절 감지 (로직 및 삼항 연산자 단일화 최적화 완료)
         if user_id in user_last_full_content:
-            if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
+            if len(cleaned_space) >= 6 and cleaned_space == user_last_full_content[user_id].replace(" ", ""):
                 if task := user_buffer_tasks.pop(user_id, None):
                     task.cancel()
                 user_buffer[user_id].clear()
@@ -200,9 +212,8 @@ async def on_message(message):
                 await execute_spam_punishment(message, reason, ban_seconds=ban_sec)
                 return
 
-        # 무지성 한 글자 도배 차단
-        if len(cleaned_space) >= 10:
-            if len(set(cleaned_space)) / len(cleaned_space) < 0.35 or REPETITIVE_PATTERN.search(cleaned_space):
+        if len(cleaned_space) >= 15:
+            if len(set(cleaned_space)) / len(cleaned_space) < 0.15 or REPETITIVE_PATTERN.search(cleaned_space):
                 if task := user_buffer_tasks.pop(user_id, None):
                     task.cancel()
                 user_buffer[user_id].clear()
@@ -210,23 +221,23 @@ async def on_message(message):
                 await execute_spam_punishment(message, "아라라, 무지성 글자 도배는 안 돼! 나 눈 아프단 말이야아~!", ban_seconds=3)
                 return
 
-        # 버그 수정 완료 ( content in user_buffer[user_id] )
-        if content in user_buffer[user_id] and len(content) > 3:
-            user_spam_count[user_id] += 2
-
-        if user_id in user_last_msg_time and current_time - user_last_msg_time[user_id] < 1.5:
+        time_diff = current_time - user_last_msg_time.get(user_id, 0.0)
+        
+        if time_diff > 3.0:
+            user_spam_count[user_id] = max(0, user_spam_count[user_id] - 2)
+        elif time_diff < 1.2:  
             user_spam_count[user_id] += 1
                 
         user_last_msg_time[user_id] = current_time
 
-        if user_spam_count[user_id] >= 7:
+        if user_spam_count[user_id] >= 9:
             if task := user_buffer_tasks.pop(user_id, None):
                 task.cancel()
             user_buffer[user_id].clear()
             user_spam_count[user_id] = 0
-            await execute_spam_punishment(message, "내가 적당히 하라구 했지?! 30초 동안 벽 보고 반성하고 오기!!", ban_seconds=30)
+            await execute_spam_punishment(message, "내가 적당히 하라구 했지?! 진짜 뇌절은 금지야아~!", ban_seconds=30)
             return
-        elif user_spam_count[user_id] >= 5:
+        elif user_spam_count[user_id] >= 6:
             await message.channel.send("우와아아 진정해! ㅋㅋㅋ 숨 좀 쉬고 천천히 말해봐 돌멩아!")
 
     if task := user_buffer_tasks.pop(user_id, None):
@@ -248,7 +259,7 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
     if not full_content: return
 
     user_last_full_content[user_id] = full_content
-    user_spam_count[user_id] = 0
+    user_spam_count[user_id] = max(0, user_spam_count[user_id] - 1)
 
     try:
         if user_id not in user_conversations or not user_conversations[user_id]:
@@ -312,7 +323,6 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
         print("="*50 + "\n")
         await message.channel.send("왐마야, 지금 잠시 렉 걸렸나 봐! 미안미안, 다시 한번만 말 걸어줘!")
 
-# 프로그램 종료 시 소켓 리소스를 닫아주기 위한 안전장치
 @client.event
 async def on_close():
     global http_session
@@ -320,3 +330,5 @@ async def on_close():
         await http_session.close()
 
 client.run(DISCORD_TOKEN)
+```
+eof
