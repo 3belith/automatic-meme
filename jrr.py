@@ -30,6 +30,13 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 # 모델명을 하드코딩하지 않고 .env에서 오버라이드 가능하게 함
 # (구글이 모델을 자주 폐기/교체하므로 코드 수정 없이 대응하기 위함)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+# 1차 모델이 계속 503(과부하)일 때 넘어갈 대체 모델
+GEMINI_MODEL_FALLBACK = os.getenv("GEMINI_MODEL_FALLBACK", "gemini-2.5-flash")
+GEMINI_MODELS = [m for m in (GEMINI_MODEL, GEMINI_MODEL_FALLBACK) if m]
+
+# 503 발생 시 같은 키로 재시도할 횟수 / 기본 대기 시간(초)
+RETRY_ON_OVERLOAD = int(os.getenv("LILPA_RETRY_COUNT", "2"))
+RETRY_BASE_DELAY = float(os.getenv("LILPA_RETRY_DELAY", "1.0"))
 
 API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
@@ -105,6 +112,10 @@ channel_history: Dict[int, Deque[str]] = defaultdict(lambda: deque(maxlen=HISTOR
 
 # 유저별 마지막 요청 시각 (쿨다운 체크용)
 last_request_at: Dict[int, float] = {}
+
+# 이번 실행 동안 영구적으로 막힌 것으로 확인된 키 (예: 403 PERMISSION_DENIED)
+# -> 매번 다시 시도해서 시간 낭비하지 않도록 캐싱
+dead_keys: set = set()
 
 
 async def call_gemini_api(channel_id: int, user_display_name: str, content: str) -> str:
