@@ -45,7 +45,7 @@ api_semaphore = asyncio.Semaphore(1)
 LAST_API_CALL_TIME = 0.0
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("PRAGMA synchronous=OFF;")
@@ -60,7 +60,7 @@ def init_db():
         conn.commit()
 
 def load_chat_history_from_db(user_id):
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT role, content FROM chat_history 
@@ -71,7 +71,7 @@ def load_chat_history_from_db(user_id):
     return [{"role": "user" if r == "user" else "model", "parts": [{"text": c}]} for r, c in reversed(rows)]
 
 def save_chat_msg_to_db(user_id, role, content):
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
         cursor = conn.cursor()
         cursor.execute('INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)', (str(user_id), role, content))
         cursor.execute('''
@@ -85,7 +85,7 @@ LP_SYSTEM_PROMPT_BASE = (
     "너는 버추얼 아이돌 그룹 이세계아이돌의 멤버이자, 압도적인 가창력을 가진 메인보컬 겸 서열 1위(자칭)인 릴파(LILPA)야. "
     "지금은 너를 무척 아끼고 응원하는 팬(돌멩이)과 비밀 디스코드 DM으로 단둘이서 1대1 대화를 나누고 있어.\n\n"
     "[★ 핵심 캐릭터성 및 대화 톤 규칙]\n"
-    "1. 미친 청량함และ 에너제틱 텐션: 기본적으로 에너지가 언제나 넘치고 밝으며 쾌활해! 리액션이 엄청 크고 시원시원해. (예: 왐마야!, 아라라?, 우와아아!, 대박 ㅋㅋㅋ, 으아아악)\n"
+    "1. 미친 청량함과 에너제틱 텐션: 기본적으로 에너지가 언제나 넘치고 밝으며 쾌활해! 리액션이 엄청 크고 시원시원해. (예: 왐마야!, 아라라?, 우와아아!, 대박 ㅋㅋㅋ, 으아아악)\n"
     "2. 자연스러운 디코 반말 말투: 딱딱한 문어체가 아니라, 친근하고 현실감 넘치는 카톡/디코 반말 말투(~했어, ~했지?, ~잖아, ~해가지구)를 기본 베이스로 사용해줘.\n"
     "3. 돌멩이 사랑: 팬들을 무조건 '우리 돌멩이~', '돌멩아'라고 다정하게 부르며 아끼고 챙겨주는 친근한 언니/누나 같은 모습을 보여줘.\n"
     "4. 외국어 및 마크다운 절대 금지: 영어 단어, 한자, 중국어는 절대로 쓰지 마. 강조를 위한 ** 기호(볼드 마크다운)도 디코 톡 호흡에 방해되니까 절대 쓰지 마.\n"
@@ -149,208 +149,5 @@ async def execute_spam_punishment(message, reason_msg, ban_seconds=3):
         await message.channel.send(reason_msg)
 
 def is_code_or_template(text):
-    if '```' in text: return True
-    code_keywords = ['import ', 'def ', 'class ', 'return ', 'public static void', 'const ', 'let ', 'function', 'import {', '<html>', 'json', '={', ':#', 'discord.']
-    if len(text.split('\n')) >= 3:
-        if sum(1 for kw in code_keywords if kw in text) >= 2: return True
-    return False
-
-def calculate_dynamic_delay(total_text: str, num_chunks: int) -> float:
-    length_factor = len(total_text) * 0.012
-    chunk_factor = 2.4 / (num_chunks + 1)
-    return max(0.5, min(length_factor * chunk_factor, 3.0))
-
-@client.event
-async def on_ready():
-    init_db()
-    print(f"가동 완료: {client.user.name}")
-
-@client.event
-async def on_message(message):
-    if message.author == client.user or not message.content:
-        return
-
-    user_id = message.author.id
-    content = message.content.strip()
-    current_time = time.time()
-    is_template = is_code_or_template(content)
-    
-    if not is_template:
-        cleaned_space = content.replace(" ", "")
-
-        if user_id in user_last_full_content:
-            if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
-                if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
-                user_buffer[user_id].clear()
-                user_spam_count[user_id] = 0
-                
-                if len(content) >= 100:
-                    await execute_spam_punishment(message, "왐마야, 이 긴 장문을 똑같이 복붙해서 또 보낸다구?! 뇌절은 금지야아~!", ban_seconds=10)
-                else:
-                    await execute_spam_punishment(message, "야아아, 똑같은 말 계속 복붙해서 도배하지 마라구 ㅋㅋㅋ 앵무새야 뭐야~!", ban_seconds=3)
-                return
-
-        if len(cleaned_space) >= 10:
-            if len(set(cleaned_space)) / len(cleaned_space) < 0.35 or REPETITIVE_PATTERN.search(cleaned_space):
-                if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
-                user_buffer[user_id].clear()
-                user_spam_count[user_id] = 0
-                await execute_spam_punishment(message, "아라라, 무지성 글자 도배는 안 돼! 나 눈 아프단 말이야아~!", ban_seconds=3)
-                return
-
-        if user_id in user_buffer[user_id] and len(content) > 3:
-            user_spam_count[user_id] += 2
-
-        if user_id in user_last_msg_time and current_time - user_last_msg_time[user_id] < 1.5:
-            user_spam_count[user_id] += 1
-                
-        user_last_msg_time[user_id] = current_time
-
-        if user_spam_count[user_id] >= 7:
-            if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
-            user_buffer[user_id].clear()
-            user_spam_count[user_id] = 0
-            await execute_spam_punishment(message, "내가 적당히 하라구 했지?! 30초 동안 벽 보고 반성하고 오기!!", ban_seconds=30)
-            return
-        elif user_spam_count[user_id] >= 5:
-            await message.channel.send("우와아아 진정해! ㅋㅋㅋ 숨 좀 쉬고 천천히 말해봐 돌멩아!")
-
-    if user_id in user_buffer_tasks:
-        user_buffer_tasks[user_id].cancel()
-
-    user_buffer[user_id].append(content)
-    
-    dynamic_delay = 1.0 if is_template else min(2.2 + (len(" ".join(user_buffer[user_id])) // 12) * 0.3, 6.0)
-    user_buffer_tasks[user_id] = asyncio.create_task(process_delayed_message(user_id, message, dynamic_delay, is_template))
-
-async def process_delayed_message(user_id, message, delay_time, is_template):
-    try: await asyncio.sleep(delay_time)
-    except asyncio.CancelledError: return
-
-    if user_id in user_buffer_tasks: del user_buffer_tasks[user_id]
-
-    full_content = " ".join(user_buffer[user_id]).strip()
-    user_buffer[user_id].clear()
-    if not full_content: return
-
-    user_last_full_content[user_id] = full_content
-    user_spam_count[user_id] = 0
-
-    force_censor = bool(BAD_WORDS_PATTERN.search(full_content.replace(" ", "")))
-
-    # 💡 [여기서 즉시 삭제] 검열에 걸리면 AI 처리 전에 글부터 바로 지웁니다.
-    if force_censor:
-        try: 
-            await message.delete()
-        except Exception: 
-            pass
-
-    try:
-        if user_id not in user_conversations or not user_conversations[user_id]:
-            user_conversations[user_id] = load_chat_history_from_db(user_id)
-
-        history = user_conversations[user_id]
-
-        async with message.channel.typing():
-            if force_censor:
-                reply = "방금 그 표현은 진짜 별로다. 나 상처받아, 다음부턴 절대 쓰지 마."
-                dynamic_prompt = LP_SYSTEM_PROMPT_BASE
-            else:
-                # ... (이하 중략: 기존 장문/단문 조건문 코드 그대로 유지) ...
-                input_len = len(full_content)
-                if is_template:
-                    length_instruction = "[★ 분량 제한 지침]\n유저가 소스코드나 템플릿을 보냈어! 릴파의 톤을 완벽히 유지하면서 줄바꿈 포함 총 4~5줄 내외의 완성된 문장들로 시원시원하게 핵심만 대답해줘."
-                elif input_len <= 15:
-                    length_instruction = "[★ 분량 제한 지침]\n유저가 매우 짧게 한두 단어로 말했어! 너도 반드시 줄바꿈 포함 딱 1~2줄(단문) 이내의 완결된 문장으로만 아주 짧고 쾌활하게 대답해라. 절대로 길게 서술하지 마."
-                else:
-                    length_instruction = "[★ 분량 제한 지침]\n유저가 간결하게 말했으니, 너도 줄바꿈 포함 최대 2~3줄 이내로 끊어 치며 완결된 문장들로 대답해라."
-
-                dynamic_prompt = LP_SYSTEM_PROMPT_BASE + length_instruction
-                
-                current_payload_contents = list(history) + [{"role": "user", "parts": [{"text": full_content}]}]
-                reply = await call_gemini_api(current_payload_contents, dynamic_prompt)
-            
-            if reply == "RATE_LIMIT_ERROR":
-                await message.channel.send("으아아악 코어가 전부 터졌어;; 미안미안! 5초만 쉬었다가 다시 말해줘!")
-                return
-
-            if reply and not force_censor:
-                if HANJA_PATTERN.search(reply): 
-                    reply = HANJA_PATTERN.sub('', reply).strip()
-                if EMOJI_PATTERN.search(reply):
-                    reply = EMOJI_PATTERN.sub('', reply).strip()
-                if not reply: 
-                    reply = "방금 살짝 렉 걸려서 씹혔나 봐 ㅋㅋㅋ 다시 한 번만 얘기해줘 돌멩아!"
-
-        
-        # process_delayed_message 함수 내부의 전송 부분을 아래와 같이 보완합니다.
-
-        if reply:
-            ai_censor_detected = any(
-                phrase in reply 
-                for phrase in ["선 넘은 것 같아", "방금 그 표현은 진짜 별로다", "나 상처받아"]
-            )
-
-            if force_censor or ai_censor_detected:
-                try: 
-                    await message.delete()
-                except Exception: 
-                    pass
-
-            final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
-            num_chunks = len(final_messages)
-            dynamic_sleep = calculate_dynamic_delay(reply, num_chunks)
-            
-            # 💡 [중복 전송 방지 안전장치] 
-            # 현재 메시지 ID를 기준으로 이미 처리된 대사인지 검증하는 가드 로직
-            if hasattr(message, "_already_processed"):
-                return
-            message._already_processed = True # 처리 완료 마킹
-
-            for idx, msg_content in enumerate(final_messages):
-                if msg_content:
-                    await message.channel.send(msg_content)
-                    if idx < num_chunks - 1:
-                        await asyncio.sleep(dynamic_sleep)
-
-            
-            # 기존 대사 쪼개기 및 전송 로직 이어짐
-            final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
-            num_chunks = len(final_messages)
-            dynamic_sleep = calculate_dynamic_delay(reply, num_chunks)
-            
-            for idx, msg_content in enumerate(final_messages):
-                if msg_content:
-                    await message.channel.send(msg_content)
-                    if idx < num_chunks - 1:
-                        await asyncio.sleep(dynamic_sleep)
-
-            if force_censor:
-                try: await message.delete()
-                except: pass
-
-            final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
-            num_chunks = len(final_messages)
-            dynamic_sleep = calculate_dynamic_delay(reply, num_chunks)
-            
-            for idx, msg_content in enumerate(final_messages):
-                if msg_content:
-                    await message.channel.send(msg_content)
-                    if idx < num_chunks - 1:
-                        await asyncio.sleep(dynamic_sleep)
-            
-            if not force_censor:
-                history.append({"role": "user", "parts": [{"text": full_content}]})
-                history.append({"role": "model", "parts": [{"text": reply}]})
-                save_chat_msg_to_db(user_id, "user", full_content)
-                save_chat_msg_to_db(user_id, "assistant", reply)
-                
-                if len(history) > MAX_MEMORY * 2:
-                    user_conversations[user_id] = history[-MAX_MEMORY * 2:]
-        else:
-            await message.channel.send("아라라? 방금 디코 버그 걸렸나 봐 ㅋㅋㅋ 다시 보내줘!")
-
-    except Exception:
-        await message.channel.send("왐마야, 지금 잠시 렉 걸렸나 봐! 미안미안, 다시 한번만 말 걸어줘!")
-
-client.run(DISCORD_TOKEN)
+    if '
+http://googleusercontent.com/immersive_entry_chip/0
