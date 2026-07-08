@@ -8,7 +8,7 @@ import discord
 import aiohttp
 import traceback
 from dotenv import load_dotenv
-from collections import defaultdict
+from collections import defaultdict, deque
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(current_dir, '.env')
@@ -25,7 +25,6 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 user_conversations = defaultdict(list)
-# 💡 [메모리 확장] 기억할 대화 쌍의 수를 3에서 6으로 확장 (총 12개 대사 기억)
 MAX_MEMORY = 6 
 
 user_last_msg_time = {}
@@ -33,6 +32,9 @@ user_spam_count = defaultdict(int)
 user_buffer = defaultdict(list)
 user_buffer_tasks = {}
 user_last_full_content = {}  
+
+# 💡 [버그 수정] Message 객체 __slots__ 제약을 피하기 위해 최근 처리한 메시지 ID를 추적하는 Deque 선언 (최대 100개)
+processed_msg_ids = deque(maxlen=100)
 
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 EMOJI_PATTERN = re.compile(r'[\U00010000-\U0010FFFF]', flags=re.UNICODE)
@@ -74,11 +76,11 @@ def save_chat_msg_to_db(user_id, role, content):
         cursor.execute('INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)', (str(user_id), role, content))
         conn.commit()
         
-        # 💡 [호환성 개선] SQLite 버전에 상관없이 작동하도록 파이썬에서 DB 개수 계산 후 안전하게 삭제
+        # 💡 SQLite 버전에 무관하도록 안전한 방식으로 데이터를 조회하여 오래된 기록을 삭제
         cursor.execute('SELECT id FROM chat_history WHERE user_id = ? ORDER BY id DESC', (str(user_id),))
         rows = cursor.fetchall()
         if len(rows) > 24:
-            oldest_id_to_keep = rows[23][0] # 24번째 데이터를 넘어가면 그 이전 데이터는 전부 정리
+            oldest_id_to_keep = rows[23][0]
             cursor.execute('DELETE FROM chat_history WHERE user_id = ? AND id < ?', (str(user_id), oldest_id_to_keep))
             conn.commit()
 
@@ -274,9 +276,10 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
                     reply = "방금 살짝 렉 걸려서 씹혔나 봐 ㅋㅋㅋ 다시 한 번만 얘기해줘 돌멩아!"
 
         if reply:
-            if hasattr(message, "_already_processed"):
+            # 💡 [버그 해결] message 객체에 새 속성을 할당하는 대신 deque 자료구조(processed_msg_ids)를 이용하여 중복 확인
+            if message.id in processed_msg_ids:
                 return
-            message._already_processed = True 
+            processed_msg_ids.append(message.id)
 
             final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
             num_chunks = len(final_messages)
@@ -299,7 +302,7 @@ async def process_delayed_message(user_id, message, delay_time, is_template):
             await message.channel.send("아라라? 방금 디코 버그 걸렸나 봐 ㅋㅋㅋ 다시 보내줘!")
 
     except Exception:
-        # 💡 혹시라도 예외가 발생할 경우, 콘솔에 에러의 세부 내역을 확실하게 출력합니다.
+        # 혹시라도 예외가 발생할 경우, 콘솔에 에러의 세부 내역을 확실하게 출력합니다.
         print("\n" + "="*50)
         print("릴파 봇 내부 에러(Exception) 발생!")
         traceback.print_exc()
