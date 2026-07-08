@@ -330,5 +330,3 @@ async def on_close():
         await http_session.close()
 
 client.run(DISCORD_TOKEN)
-```
-eof
