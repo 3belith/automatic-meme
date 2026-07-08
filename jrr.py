@@ -4,7 +4,6 @@ import asyncio
 import discord
 import aiohttp
 import time
-import re
 from dotenv import load_dotenv
 from collections import defaultdict
 
@@ -16,8 +15,8 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
 
-# 시스템 프롬프트 (릴파의 모든 성격과 행동 지침을 상세하게 기술)
-LP_SYSTEM_PROMPT_BASE = """
+# 완벽 복구된 시스템 프롬프트
+LP_SYSTEM_PROMPT = """
 너는 이세계아이돌의 메인보컬 '릴파'야. 
 [릴파의 정체성]
 1. 쾌활하고 에너지가 넘치는 동네 언니이자, 때로는 단호한 판단력을 가진 릴사장님이야.
@@ -32,17 +31,18 @@ LP_SYSTEM_PROMPT_BASE = """
 - 선 넘는 채팅(정치, 비하, 성희롱 등): 텐션을 즉시 낮추고 단호하게 정색해.
   예: '방금 그 말은 진짜 실망이야. 우리 관계가 고작 이거였어? 나 그런 사람 정말 싫어해. DELETE_MSG'
 - 도배/무지성 채팅: 유쾌하지만 단호하게 앵무새냐고 지적하거나 릴파답게 장난스럽게 받아쳐.
+- 모든 대답은 릴파의 페르소나 안에서 이루어져야 하며, AI임을 드러내지 마.
 """
 
+# 디스코드 클라이언트 정의
+intents = discord.Intents.default()
+intents.message_content = True
+client = discord.Client(intents=intents)
+
+# API 호출 로직
 async def call_gemini_api(content):
-    global http_session, api_call_count
-    if not API_KEYS: return "ERROR"
-    if http_session is None: http_session = aiohttp.ClientSession()
-    
+    if not API_KEYS: return "ERR_NO_KEYS"
     current_key = random.choice(API_KEYS)
-    api_call_count += 1
-    print(f"[DEBUG] API 호출 횟수: {api_call_count}회") # 터미널에서 호출 횟수 확인
-    
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={current_key}"
     
     payload = {
@@ -50,38 +50,33 @@ async def call_gemini_api(content):
         "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
     }
     
-    try:
-        async with http_session.post(url, json=payload) as resp:
-            data = await resp.json()
-            if resp.status == 200:
-                return data['candidates'][0]['content']['parts'][0]['text']
-            elif resp.status == 429:
-                print(f"[!] 쿼터 초과 경고: API 키 사용량 제한 도달")
-                return "OVER_LIMIT"
-            else:
-                print(f"[!] API 에러 발생: {resp.status} - {data}")
-                return "ERROR"
-    except Exception as e:
-        print(f"[!] Connection Error: {e}")
-        return "ERROR"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data['candidates'][0]['content']['parts'][0]['text']
+                else:
+                    return f"ERR_CODE_{resp.status}"
+        except Exception as e:
+            return "ERR_CONN"
+
+@client.event
+async def on_ready():
+    print(f"가동 완료: {client.user.name}")
 
 @client.event
 async def on_message(message):
-    # 1. 봇 메시지 무조건 차단
     if message.author.bot: return
-    # 2. 멘션이 없거나 내가 호출되지 않았을 때 무시하도록 설정 가능 (필요 시)
-    
-    user_id = message.author.id
     
     async with message.channel.typing():
         reply = await call_gemini_api(message.content)
     
-    if reply == "OVER_LIMIT":
-        await message.channel.send("지금 돌멩이들이랑 너무 많이 대화해서 릴파 목이 다 쉬었어!")
-    elif reply == "ERROR":
-        await message.channel.send("릴파 뇌가 잠시 과부하 됐어!")
+    if reply.startswith("ERR_"):
+        await message.channel.send("릴파 봇이 잠시 쉬고 싶어 하는 것 같아! 나중에 다시 불러줘.")
     elif "DELETE_MSG" in reply:
-        await message.channel.send(reply.replace("DELETE_MSG", "").strip())
+        clean_reply = reply.replace("DELETE_MSG", "").strip()
+        await message.channel.send(clean_reply)
         try: await message.delete()
         except: pass
     else:
