@@ -24,7 +24,8 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 user_conversations = defaultdict(list)
-MAX_MEMORY = 3 
+# 💡 [메모리 확장] 기억할 대화 쌍의 수를 3에서 6으로 확장 (총 12개 대사 기억)
+MAX_MEMORY = 6 
 
 user_last_msg_time = {}
 user_spam_count = defaultdict(int)
@@ -34,10 +35,6 @@ user_last_full_content = {}
 
 HANJA_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 EMOJI_PATTERN = re.compile(r'[\U00010000-\U0010FFFF]', flags=re.UNICODE)
-BAD_WORDS_PATTERN = re.compile(
-    r'(패드립|느금|느엄|시발|씨발|새끼|존나|지랄|병신|호로|창년|창녀|ㅅㅂ|ㅂㅅ|ㄷㅊ|ㄲㅈ|시\.발|씨\.발|존\.나|시~발|병~신|\b좆\b|\b씹\b)', 
-    re.IGNORECASE
-)
 REPETITIVE_PATTERN = re.compile(r'(.)\1{5,}')
 
 DB_PATH = os.path.join(current_dir, 'lilpa_memory.db')
@@ -74,9 +71,10 @@ def save_chat_msg_to_db(user_id, role, content):
     with sqlite3.connect(DB_PATH, check_same_thread=False) as conn:
         cursor = conn.cursor()
         cursor.execute('INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)', (str(user_id), role, content))
+        # 💡 [메모리 확장] DB 보관 한도를 12개에서 24개로 늘려 메모리 유실 방지
         cursor.execute('''
             DELETE FROM chat_history WHERE id NOT IN (
-                SELECT id FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT 12
+                SELECT id FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT 24
             ) AND user_id = ?
         ''', (str(user_id), str(user_id)))
         conn.commit()
@@ -149,5 +147,156 @@ async def execute_spam_punishment(message, reason_msg, ban_seconds=3):
         await message.channel.send(reason_msg)
 
 def is_code_or_template(text):
-    if '
-http://googleusercontent.com/immersive_entry_chip/0
+    if '```' in text: 
+        return True
+    code_keywords = ['import ', 'def ', 'class ', 'return ', 'public static void', 'const ', 'let ', 'function', 'import {', '<html>', 'json', '={', ':#', 'discord.']
+    if len(text.split('\n')) >= 3:
+        if sum(1 for kw in code_keywords if kw in text) >= 2: 
+            return True
+    return False
+
+def calculate_dynamic_delay(total_text: str, num_chunks: int) -> float:
+    length_factor = len(total_text) * 0.012
+    chunk_factor = 2.4 / (num_chunks + 1)
+    return max(0.5, min(length_factor * chunk_factor, 3.0))
+
+@client.event
+async def on_ready():
+    init_db()
+    print(f"가동 완료: {client.user.name}")
+
+@client.event
+async def on_message(message):
+    if message.author == client.user or not message.content:
+        return
+
+    user_id = message.author.id
+    content = message.content.strip()
+    current_time = time.time()
+    is_template = is_code_or_template(content)
+    
+    if not is_template:
+        cleaned_space = content.replace(" ", "")
+
+        if user_id in user_last_full_content:
+            if cleaned_space == user_last_full_content[user_id].replace(" ", "") and len(cleaned_space) >= 5:
+                if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
+                user_buffer[user_id].clear()
+                user_spam_count[user_id] = 0
+                
+                if len(content) >= 100:
+                    await execute_spam_punishment(message, "왐마야, 이 긴 장문을 똑같이 복붙해서 또 보낸다구?! 뇌절은 금지야아~!", ban_seconds=10)
+                else:
+                    await execute_spam_punishment(message, "야아아, 똑같은 말 계속 복붙해서 도배하지 마라구 ㅋㅋㅋ 앵무새야 뭐야~!", ban_seconds=3)
+                return
+
+        if len(cleaned_space) >= 10:
+            if len(set(cleaned_space)) / len(cleaned_space) < 0.35 or REPETITIVE_PATTERN.search(cleaned_space):
+                if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
+                user_buffer[user_id].clear()
+                user_spam_count[user_id] = 0
+                await execute_spam_punishment(message, "아라라, 무지성 글자 도배는 안 돼! 나 눈 아프단 말이야아~!", ban_seconds=3)
+                return
+
+        if user_id in user_buffer[user_id] and len(content) > 3:
+            user_spam_count[user_id] += 2
+
+        if user_id in user_last_msg_time and current_time - user_last_msg_time[user_id] < 1.5:
+            user_spam_count[user_id] += 1
+                
+        user_last_msg_time[user_id] = current_time
+
+        if user_spam_count[user_id] >= 7:
+            if user_id in user_buffer_tasks: user_buffer_tasks[user_id].cancel()
+            user_buffer[user_id].clear()
+            user_spam_count[user_id] = 0
+            await execute_spam_punishment(message, "내가 적당히 하라구 했지?! 30초 동안 벽 보고 반성하고 오기!!", ban_seconds=30)
+            return
+        elif user_spam_count[user_id] >= 5:
+            await message.channel.send("우와아아 진정해! ㅋㅋㅋ 숨 좀 쉬고 천천히 말해봐 돌멩아!")
+
+    if user_id in user_buffer_tasks:
+        user_buffer_tasks[user_id].cancel()
+
+    user_buffer[user_id].append(content)
+    
+    dynamic_delay = 1.0 if is_template else min(2.2 + (len(" ".join(user_buffer[user_id])) // 12) * 0.3, 6.0)
+    user_buffer_tasks[user_id] = asyncio.create_task(process_delayed_message(user_id, message, dynamic_delay, is_template))
+
+async def process_delayed_message(user_id, message, delay_time, is_template):
+    try: await asyncio.sleep(delay_time)
+    except asyncio.CancelledError: return
+
+    if user_id in user_buffer_tasks: 
+        try: del user_buffer_tasks[user_id]
+        except KeyError: pass
+
+    full_content = " ".join(user_buffer[user_id]).strip()
+    user_buffer[user_id].clear()
+    if not full_content: return
+
+    user_last_full_content[user_id] = full_content
+    user_spam_count[user_id] = 0
+
+    try:
+        if user_id not in user_conversations or not user_conversations[user_id]:
+            user_conversations[user_id] = load_chat_history_from_db(user_id)
+
+        history = user_conversations[user_id]
+
+        async with message.channel.typing():
+            input_len = len(full_content)
+            if is_template:
+                length_instruction = "[★ 분량 제한 지침]\n유저가 소스코드나 템플릿을 보냈어! 릴파의 톤을 완벽히 유지하면서 줄바꿈 포함 총 4~5줄 내외의 완성된 문장들로 시원시원하게 핵심만 대답해줘."
+            elif input_len <= 15:
+                length_instruction = "[★ 분량 제한 지침]\n유저가 매우 짧게 한두 단어로 말했어! 너도 반드시 줄바꿈 포함 딱 1~2줄(단문) 이내의 완결된 문장으로만 아주 짧고 쾌활하게 대답해라. 절대로 길게 서술하지 마."
+            else:
+                length_instruction = "[★ 분량 제한 지침]\n유저가 간결하게 말했으니, 너도 줄바꿈 포함 최대 2~3줄 이내로 끊어 치며 완결된 문장들로 대답해라."
+
+            dynamic_prompt = LP_SYSTEM_PROMPT_BASE + length_instruction
+            current_payload_contents = list(history) + [{"role": "user", "parts": [{"text": full_content}]}]
+            
+            reply = await call_gemini_api(current_payload_contents, dynamic_prompt)
+            
+            if reply == "RATE_LIMIT_ERROR":
+                await message.channel.send("으아아악 코어가 전부 터졌어;; 미안미안! 5초만 쉬었다가 다시 말해줘!")
+                return
+
+            if reply:
+                if HANJA_PATTERN.search(reply): 
+                    reply = HANJA_PATTERN.sub('', reply).strip()
+                if EMOJI_PATTERN.search(reply):
+                    reply = EMOJI_PATTERN.sub('', reply).strip()
+                if not reply: 
+                    reply = "방금 살짝 렉 걸려서 씹혔나 봐 ㅋㅋㅋ 다시 한 번만 얘기해줘 돌멩아!"
+
+        if reply:
+            if hasattr(message, "_already_processed"):
+                return
+            message._already_processed = True 
+
+            final_messages = [line.strip() for line in reply.split('\n') if line.strip() and not line.isspace()]
+            num_chunks = len(final_messages)
+            dynamic_sleep = calculate_dynamic_delay(reply, num_chunks)
+            
+            for idx, msg_content in enumerate(final_messages):
+                if msg_content:
+                    await message.channel.send(msg_content)
+                    if idx < num_chunks - 1:
+                        await asyncio.sleep(dynamic_sleep)
+
+            history.append({"role": "user", "parts": [{"text": full_content}]})
+            history.append({"role": "model", "parts": [{"text": reply}]})
+            save_chat_msg_to_db(user_id, "user", full_content)
+            save_chat_msg_to_db(user_id, "assistant", reply)
+            
+            # 💡 [메모리 확장] 늘어난 MAX_MEMORY에 맞게 리스트 슬라이싱 범위를 동적으로 조절
+            if len(history) > MAX_MEMORY * 2:
+                user_conversations[user_id] = history[-MAX_MEMORY * 2:]
+        else:
+            await message.channel.send("아라라? 방금 디코 버그 걸렸나 봐 ㅋㅋㅋ 다시 보내줘!")
+
+    except Exception:
+        await message.channel.send("왐마야, 지금 잠시 렉 걸렸나 봐! 미안미안, 다시 한번만 말 걸어줘!")
+
+client.run(DISCORD_TOKEN)
