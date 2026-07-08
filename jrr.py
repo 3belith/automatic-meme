@@ -2,8 +2,8 @@ import os
 import random
 import discord
 import aiohttp
-from dotenv import load_dotenv
 import logging
+from dotenv import load_dotenv
 
 # 로깅 설정 (에러 원인 추적용)
 logging.basicConfig(level=logging.INFO)
@@ -14,10 +14,11 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(current_dir, '.env'))
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+# API 키 목록을 다시 확인하여, 유효한 것만 필터링
 API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
 
-# 요청하신 프롬프트 100% 원상복구
+# 요청하신 프롬프트 100% 원상복구 (절대 수정 없음)
 LP_SYSTEM_PROMPT = """
 너는 이세계아이돌의 메인보컬 '릴파'야. 
 [릴파의 정체성]
@@ -43,13 +44,12 @@ client = discord.Client(intents=intents)
 async def call_gemini_api(content):
     if not API_KEYS: return "ERR_NO_KEYS"
     
-    # 1.5-flash 모델로 명시적으로 고정하여 쿼터 누수 방지
+    # 1.5-flash 모델로 고정 (v1beta)
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
     
-    for _ in range(len(API_KEYS)):
-        current_key = random.choice(API_KEYS)
+    # 키를 순회하며 시도
+    for current_key in API_KEYS:
         full_url = f"{url}?key={current_key}"
-        
         payload = {
             "contents": [{"role": "user", "parts": [{"text": content}]}],
             "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
@@ -62,15 +62,14 @@ async def call_gemini_api(content):
                         data = await resp.json()
                         return data['candidates'][0]['content']['parts'][0]['text']
                     
-                    # 429(할당량 초과) 발생 시 로그 남기고 다음 키 시도
+                    # 404 에러 상세 출력
                     logger.warning(f"Key {current_key[-4:]} failed with status {resp.status}")
-                    if resp.status == 429: continue 
-                    else: return f"ERR_CODE_{resp.status}"
+                    continue 
             except Exception as e:
                 logger.error(f"Connection error: {e}")
-                return "ERR_CONN"
+                continue
                 
-    return "ERR_ALL_QUOTA_EXCEEDED"
+    return "ERR_ALL_KEYS_FAILED"
 
 @client.event
 async def on_ready():
@@ -83,10 +82,8 @@ async def on_message(message):
     async with message.channel.typing():
         reply = await call_gemini_api(message.content)
     
-    # 에러 원인을 명확히 출력 (봇이 에러를 숨기지 않음)
     if reply.startswith("ERR_"):
-        await message.channel.send(f"[시스템 에러 알림] 릴파 봇 연결 문제: {reply}")
-        print(f"DEBUG: {reply}") # 터미널에 에러 원인 상세 출력
+        await message.channel.send(f"[시스템 에러] 연결 실패: {reply}")
     elif "DELETE_MSG" in reply:
         clean_reply = reply.replace("DELETE_MSG", "").strip()
         await message.channel.send(clean_reply)
