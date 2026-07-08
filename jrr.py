@@ -44,8 +44,8 @@ client = discord.Client(intents=intents)
 async def call_gemini_api(content):
     if not API_KEYS: return "ERR_NO_KEYS"
     
-    # 1.5-flash 모델로 고정 (v1beta)
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    # URL 구조를 v1으로 업데이트 (404 방지)
+    url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent"
     
     # 키를 순회하며 시도
     for current_key in API_KEYS:
@@ -62,7 +62,7 @@ async def call_gemini_api(content):
                         data = await resp.json()
                         return data['candidates'][0]['content']['parts'][0]['text']
                     
-                    # 404 에러 상세 출력
+                    # 404 및 기타 에러 상세 출력
                     logger.warning(f"Key {current_key[-4:]} failed with status {resp.status}")
                     continue 
             except Exception as e:
