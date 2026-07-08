@@ -1,11 +1,13 @@
 import os
 import random
-import asyncio
 import discord
 import aiohttp
-import time
 from dotenv import load_dotenv
-from collections import defaultdict
+import logging
+
+# 로깅 설정 (에러 원인 추적용)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("LILPA_BOT")
 
 # 환경 설정
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -15,7 +17,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
 
-# 완벽 복구된 시스템 프롬프트
+# 요청하신 프롬프트 100% 원상복구
 LP_SYSTEM_PROMPT = """
 너는 이세계아이돌의 메인보컬 '릴파'야. 
 [릴파의 정체성]
@@ -34,36 +36,45 @@ LP_SYSTEM_PROMPT = """
 - 모든 대답은 릴파의 페르소나 안에서 이루어져야 하며, AI임을 드러내지 마.
 """
 
-# 디스코드 클라이언트 정의
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# API 호출 로직
 async def call_gemini_api(content):
     if not API_KEYS: return "ERR_NO_KEYS"
-    current_key = random.choice(API_KEYS)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={current_key}"
     
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": content}]}],
-        "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
-    }
+    # 1.5-flash 모델로 명시적으로 고정하여 쿼터 누수 방지
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
     
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data['candidates'][0]['content']['parts'][0]['text']
-                else:
-                    return f"ERR_CODE_{resp.status}"
-        except Exception as e:
-            return "ERR_CONN"
+    for _ in range(len(API_KEYS)):
+        current_key = random.choice(API_KEYS)
+        full_url = f"{url}?key={current_key}"
+        
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": content}]}],
+            "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(full_url, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data['candidates'][0]['content']['parts'][0]['text']
+                    
+                    # 429(할당량 초과) 발생 시 로그 남기고 다음 키 시도
+                    logger.warning(f"Key {current_key[-4:]} failed with status {resp.status}")
+                    if resp.status == 429: continue 
+                    else: return f"ERR_CODE_{resp.status}"
+            except Exception as e:
+                logger.error(f"Connection error: {e}")
+                return "ERR_CONN"
+                
+    return "ERR_ALL_QUOTA_EXCEEDED"
 
 @client.event
 async def on_ready():
-    print(f"가동 완료: {client.user.name}")
+    print(f"릴파 봇 가동 완료: {client.user.name}")
 
 @client.event
 async def on_message(message):
@@ -72,8 +83,10 @@ async def on_message(message):
     async with message.channel.typing():
         reply = await call_gemini_api(message.content)
     
+    # 에러 원인을 명확히 출력 (봇이 에러를 숨기지 않음)
     if reply.startswith("ERR_"):
-        await message.channel.send("릴파 봇이 잠시 쉬고 싶어 하는 것 같아! 나중에 다시 불러줘.")
+        await message.channel.send(f"[시스템 에러 알림] 릴파 봇 연결 문제: {reply}")
+        print(f"DEBUG: {reply}") # 터미널에 에러 원인 상세 출력
     elif "DELETE_MSG" in reply:
         clean_reply = reply.replace("DELETE_MSG", "").strip()
         await message.channel.send(clean_reply)
