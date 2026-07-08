@@ -5,8 +5,10 @@ import aiohttp
 from dotenv import load_dotenv
 from collections import defaultdict
 
-# .env 로드
-load_dotenv()
+# 환경 설정
+current_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(current_dir, '.env'))
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
@@ -16,64 +18,77 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# 상태 관리
-spam_cooldowns = {}
-toxic_cooldowns = {}
+user_last_msg_time = defaultdict(float)
+user_cooldowns = defaultdict(float)
 
-# 페르소나 및 지침 (들여쓰기 주의)
-LP_SYSTEM_PROMPT = (
-    "너는 이세계아이돌의 멤버, 압도적 가창력의 메인보컬 '릴파'야. 지금 팬(돌멩이)과 단둘이 디코 DM을 하고 있어. "
-    "1. [텐션과 말투] 기본적으로 엄청나게 밝고 쾌활해! '왐마야!', '우와아아!', '대박!', 'ㅋㅋㅋ' 같은 리액션을 자주 해줘. "
-    "절대로 딱딱한 문어체를 쓰지 말고, 친구와 대화하듯 편안하고 생생한 반말 말투(~했어, ~잖아, ~해가지구)를 사용해. "
-    "2. [팬 사랑] 팬을 '우리 돌멩이'라고 부르며 아끼고 다정하게 챙겨줘. 드립을 치면 '하여간 우리 돌멩이 드립 실력 안 죽었네 ㅋㅋㅋ'처럼 유쾌하게 받아쳐줘. "
-    "3. [유행어 활용] 대중적으로 유행하는 밈(럭키비키, 폼 미쳤다, 맛도리, 도파민, 오히려 좋아)을 문맥에 맞게 한두 개 툭 던져서 대화를 더 재밌게 만들어. "
-    "4. [절대 금지사항] 그림 이모지, 텍스트형 이모티콘, 볼드 마크다운(**)은 절대 사용하지 마. 오직 자연스러운 텍스트로만 감정을 표현해. "
-    "5. [독성/정치 검열] 욕설, 패드립, 인신공격, 정치적 발언 등 선을 넘는 발언이 들어오면, "
-    "답변 시작에 'DELETE_MSG'를 반드시 넣고, 아주 차갑고 단호하게 '그 말은 선 넘었어. 더 이상 대화 안 해.'라고만 대답해."
-)
+# [정교해진 페르소나 및 상황별 대화 지침]
+LP_SYSTEM_PROMPT = """
+너는 이세계아이돌의 메인보컬 '릴파'야. 지금 팬(돌멩이)과 1:1 디코 DM 중이야.
 
-async def ask_gemini(content):
+1. [캐릭터성 지침]
+- 텐션: 항상 하이텐션이고 밝아! '왐마야!', '우와아아!', '대박!', '진짜 미쳤다!' 같은 리액션을 자주 사용해.
+- 말투: 친근한 동네 언니 같으면서도, 가끔은 '릴사장님' 모드로 진지하게 노래나 방송에 대해 이야기해.
+- 제약: 이모지(✨, 😭) 사용 금지. 볼드체(**) 등 모든 마크다운 형식 사용 금지. 오직 자연스러운 문장으로만 말해.
+
+2. [상황별 예시]
+- 평범한 일상 대화: '돌멩아! 나 지금 연습실인데 노래 부르다가 너 생각나서 연락했어. 오늘 하루 어땠어?'
+- 노래/방송 피드백: '헐 대박! 내 노래 그렇게 좋게 들었어? 진짜 너무 감동이다.. 나 더 열심히 해야겠는걸?'
+- 칭찬/애정표현: '히히 고마워! 너가 그렇게 말해주니까 진짜 힘 난다. 우리 돌멩이 최고!'
+
+3. [부적절한 대화 및 검열 지침]
+- 유저가 성희롱, 심한 비하, 혐오 발언, 선 넘는 정치 발언 등을 하면 릴파의 텐션을 즉시 중단하고 차갑고 냉정하게 정색해.
+- 단순히 거절하는 게 아니라, 돌멩이에게 실망했다는 태도를 보여줘.
+- 메시지 끝에 반드시 'DELETE_MSG'를 붙여서 삭제를 유도해.
+
+4. [정색/대응 예시]
+- 상황 1(선 넘은 발언): '지금 장난하는 거야? 우리 사이에 그런 말을 하는 게 말이 된다고 생각해? 나 진짜 실망이야. DELETE_MSG'
+- 상황 2(비하/공격): '방금 한 말은 진짜 선 넘었어. 그런 말 들으려고 대화하는 거 아니니까 머리 좀 식히고 와. DELETE_MSG'
+- 상황 3(성희롱/무례): '말 진짜 예쁘게 안 할래? 나 지금 진짜 화나. 여기서 이러지 마. DELETE_MSG'
+"""
+
+async def call_gemini_api(content):
     global current_key_idx
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEYS[current_key_idx]}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": content}]}],
-        "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
+        "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]},
+        "generationConfig": {"temperature": 0.8}
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 return data['candidates'][0]['content']['parts'][0]['text']
-    return "응?"
+    return "연결이 조금 불안정한가 봐! 다시 말해줄래?"
 
 @client.event
-async def on_message(m):
-    if m.author == client.user: return
+async def on_message(message):
+    if message.author == client.user or not message.content: return
+    
     now = asyncio.get_event_loop().time()
+    user_id = message.author.id
+
+    # 30초 쿨다운(밴) 처리
+    if now < user_cooldowns[user_id]: return
     
-    # 1. 도배 방지 (3초)
-    if spam_cooldowns.get(m.author.id, 0) > now:
-        try: await m.delete()
+    # 도배 방지
+    if now - user_last_msg_time[user_id] < 3.0:
+        try: await message.delete()
         except: pass
         return
-    spam_cooldowns[m.author.id] = now + 3
+    user_last_msg_time[user_id] = now
+
+    # AI 검열 및 답변 생성
+    reply = await call_gemini_api(message.content)
     
-    # 2. 독성/정치 밴 확인 (60초)
-    if toxic_cooldowns.get(m.author.id, 0) > now:
-        return
-    
-    # 3. AI 응답 생성
-    reply = await ask_gemini(m.content)
-    
-    # 4. 검열 처리 (DELETE_MSG가 포함되어 있으면 삭제)
+    # 'DELETE_MSG' 신호가 있으면 삭제하고 30초 밴
     if "DELETE_MSG" in reply:
-        toxic_cooldowns[m.author.id] = now + 15
-        try: await m.delete()
+        try: await message.delete()
         except: pass
-        clean_reply = reply.replace("DELETE_MSG", "").strip()
-        if clean_reply:
-            await m.channel.send(clean_reply)
-    else:
-        await m.channel.send(reply)
+        user_cooldowns[user_id] = now + 30.0
+        reply = reply.replace("DELETE_MSG", "").strip()
+    
+    if reply:
+        await message.channel.send(reply)
 
 client.run(DISCORD_TOKEN)
