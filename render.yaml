@@ -7,5 +7,15 @@ services:
     envVars:
       - key: DISCORD_TOKEN
         sync: false
-      - key: GEMINI_API_KEY
+      - key: GEMINI_API_KEY_1
+        sync: false
+      - key: GEMINI_API_KEY_2
+        sync: false
+      - key: GEMINI_API_KEY_3
+        sync: false
+      - key: GEMINI_API_KEY_4
+        sync: false
+      - key: GEMINI_API_KEY_5
+        sync: false
+      - key: GEMINI_API_KEY_6
         sync: false
