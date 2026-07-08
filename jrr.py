@@ -5,20 +5,17 @@ import aiohttp
 import logging
 from dotenv import load_dotenv
 
-# 로깅 설정 (에러 원인 추적용)
+# 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LILPA_BOT")
 
-# 환경 설정
 current_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(current_dir, '.env'))
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-# API 키 목록을 다시 확인하여, 유효한 것만 필터링
 API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
 
-# 요청하신 프롬프트 100% 원상복구 (절대 수정 없음)
 LP_SYSTEM_PROMPT = """
 너는 이세계아이돌의 메인보컬 '릴파'야. 
 [릴파의 정체성]
@@ -44,15 +41,15 @@ client = discord.Client(intents=intents)
 async def call_gemini_api(content):
     if not API_KEYS: return "ERR_NO_KEYS"
     
-    # URL 구조를 v1으로 업데이트 (404 방지)
-    url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent"
+    # API 주소를 v1beta로 변경 (system_instruction 지원 확인)
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
     
-    # 키를 순회하며 시도
     for current_key in API_KEYS:
         full_url = f"{url}?key={current_key}"
+        # systemInstruction -> system_instruction 으로 수정 (Google API 규격)
         payload = {
             "contents": [{"role": "user", "parts": [{"text": content}]}],
-            "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
+            "system_instruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
         }
         
         async with aiohttp.ClientSession() as session:
@@ -61,10 +58,11 @@ async def call_gemini_api(content):
                     if resp.status == 200:
                         data = await resp.json()
                         return data['candidates'][0]['content']['parts'][0]['text']
-                    
-                    # 404 및 기타 에러 상세 출력
-                    logger.warning(f"Key {current_key[-4:]} failed with status {resp.status}")
-                    continue 
+                    else:
+                        # 에러 상세 내용을 서버로부터 가져옴
+                        error_text = await resp.text()
+                        logger.warning(f"Key {current_key[-4:]} failed with status {resp.status}. Detail: {error_text}")
+                        continue 
             except Exception as e:
                 logger.error(f"Connection error: {e}")
                 continue
