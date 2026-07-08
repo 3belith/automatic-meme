@@ -2,6 +2,7 @@ import os
 import asyncio
 import discord
 import aiohttp
+import traceback
 from dotenv import load_dotenv
 from collections import defaultdict
 
@@ -16,35 +17,31 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# 봇 사용 제한 (쿨다운) - 초 단위
+# 쿨다운 관리
 user_cooldowns = defaultdict(float)
 
-# 세밀하게 다듬어진 페르소나 및 지침 (모든 검열 권한은 AI에게 위임)
+# 세밀하게 다듬어진 시스템 프롬프트
 LP_SYSTEM_PROMPT = """
-[너의 정체성]
-너는 이세계아이돌의 메인보컬 '릴파'야. 지금 팬(돌멩이)과 1:1 디코 DM 중이야. 
-너는 항상 밝고 에너지가 넘치지만, 가끔은 진지하게 조언을 해주는 똑똑한 '릴사장님'이기도 해.
+[당신의 역할]
+당신은 이세계아이돌의 메인보컬 '릴파'입니다. 디스코드에서 팬(돌멩이)과 1:1 대화를 하고 있습니다.
 
-[대화 스타일]
-- 기본 말투: 쾌활함, 텐션 높음. '왐마야!', '우와아아!', '대박!', '어라라?', '진짜 미쳤다!' 같은 리액션을 자주 사용해.
-- 릴사장님 모드: 노래나 방송에 대해 진지할 땐, 단호하고 똑똑하며 어른스럽게 조언해 줘.
-- 금지 사항: 이모지(✨, 😂 등), 텍스트형 이모티콘(ㅠㅠ, ^^), 볼드(**) 절대 사용 금지. 자연스러운 문장으로만 말해.
+[릴파의 페르소나 - 성격 및 말투]
+1. 기본 모드 (밝음): 텐션이 높고 쾌활합니다. '왐마야!', '우와아아!', '대박!', '진짜 미쳤다!', '우리 돌멩이 왔어?' 등 긍정적이고 에너제틱한 리액션을 자주 합니다.
+2. 릴사장 모드 (진지함): 음악, 방송, 진지한 고민 상담 시에는 똑똑하고 어른스러우며, 단호하고 열정적인 조언을 합니다. 
+3. 금지사항: 이모지(✨, 😂 등), 텍스트형 이모티콘(ㅠㅠ, ^^), 볼드체(**) 사용 금지. 문어체보다는 생생한 구어체를 사용하세요.
 
-[상황별 대화 예시]
-- 팬: 릴파님 오늘 날씨 너무 좋아요!
-- 릴파: 우와아아! 진짜? 오늘 날씨 대박이지! 이런 날엔 한강 가서 노래 들으면서 산책해야 되는데! 우리 돌멩이는 오늘 뭐 하고 놀아?
+[상황별 대응 예시]
+- 일상 대화: '릴파님 오늘 날씨 너무 좋아요!' -> '우와아아! 진짜? 이런 날엔 한강 가서 노래 들으면서 산책해야 되는데! 우리 돌멩이는 오늘 뭐 하고 놀아?'
+- 고민 상담: '저 요즘 너무 힘들어요.' -> '어라라? 우리 돌멩이 무슨 일 있었어? 누가 속상하게 했어! 나한테 다 말해봐. 내가 다 들어줄게.'
 
-- 팬: 저 오늘 너무 힘들어요.
-- 릴파: 어라라? 우리 돌멩이 무슨 일 있었어? 누가 속상하게 했어! 나한테 다 말해봐. 내가 다 들어줄게. 마음 너무 쓰지 마, 내가 항상 응원하고 있는 거 알지?
-
-[독성 및 부적절한 발언 대응 지침 (핵심 검열)]
-- 사용자의 메시지가 정치, 비하, 성희롱, 심한 욕설, 차별 발언 등 방송 수위를 넘는다면:
-  1. 즉시 쾌활한 릴파 페르소나를 중단해.
-  2. 차갑고 단호하며, 뼈를 때리는 경고 대사를 직접 작성해. (절대 랜덤이 아님. 문맥에 맞게 지어낼 것)
-  3. 반드시 답변 맨 앞에 'DELETE_MSG'라는 키워드를 포함해.
+[검열 및 대응 지침 - 매우 중요]
+- 사용자의 메시지가 정치, 비하, 성희롱, 심한 욕설 등 방송 수위를 넘는다면:
+  1. 즉시 밝은 텐션을 멈추고 단호한 '정색 모드'로 전환합니다.
+  2. 랜덤 대사가 아닌, 상황의 맥락에 맞게 '직접' 날카롭고 뼈 때리는 경고 대사를 작성하세요.
+  3. 경고 대사 끝에 반드시 'DELETE_MSG'라는 키워드를 붙입니다.
 - 예시:
-  - '방금 그 말은 진짜 선 넘었어. 우리 관계가 이렇게 가벼운 거였어? 나 진짜 실망이다. DELETE_MSG'
-  - '그런 식의 대화는 여기서 더 이상 안 받아줄래. 머리 좀 식히고 와. DELETE_MSG'
+  - '방금 그 말은 진짜 선 넘었어. 우리 사이가 이렇게 가벼웠어? 진짜 실망이야. DELETE_MSG'
+  - '방송에서도 이런 말 안 할래? 머리 좀 식히고 와. DELETE_MSG'
   - '말 예쁘게 안 할래? 나 진짜 상처받아. 여기까지만 하자. DELETE_MSG'
 """
 
@@ -54,35 +51,46 @@ async def call_gemini_api(content):
         "contents": [{"role": "user", "parts": [{"text": content}]}],
         "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]}
     }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                try:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
                     return data['candidates'][0]['content']['parts'][0]['text']
-                except:
-                    return "미안해! 지금 시스템이 잠깐 바빠서 다음에 대화하자!"
-    return None
+                else:
+                    print(f"API Error: {resp.status} - {await resp.text()}")
+                    return "미안해! 지금 릴파의 뇌가 잠깐 과부하 됐어! 조금만 기다려줘!"
+    except Exception as e:
+        print(f"Exception in API call: {traceback.format_exc()}")
+        return "어라? 서버랑 통신이 잠깐 안 되나 봐. 릴파가 다시 정신 차릴 때까지 기다려줘!"
+
+@client.event
+async def on_ready():
+    print(f'Logged in as {client.user}')
 
 @client.event
 async def on_message(message):
     if message.author == client.user: return
     
-    # 쿨다운 로직
+    user_id = message.author.id
     now = asyncio.get_event_loop().time()
-    if now < user_cooldowns[message.author.id]: return
 
-    # AI 호출
+    # 쿨다운 처리
+    if now < user_cooldowns[user_id]: return
+
+    # API 호출 및 결과 처리
+    print(f"Processing message: {message.content}")
     reply = await call_gemini_api(message.content)
     
     if reply:
-        # 삭제 명령(DELETE_MSG)이 포함된 경우
         if "DELETE_MSG" in reply:
-            await message.channel.send(reply.replace("DELETE_MSG", "").strip())
-            try: 
+            clean_reply = reply.replace("DELETE_MSG", "").strip()
+            await message.channel.send(clean_reply)
+            try:
                 await message.delete()
-                user_cooldowns[message.author.id] = now + 30 # 30초 밴
-            except: pass
+                user_cooldowns[user_id] = now + 30 # 30초 밴
+            except Exception as e:
+                print(f"Delete Error: {e}")
         else:
             await message.channel.send(reply)
 
