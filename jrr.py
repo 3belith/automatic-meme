@@ -1,3 +1,4 @@
+
 import os
 import re
 import time
@@ -23,21 +24,37 @@ API_KEYS = [k for k in API_KEYS if k]
 
 PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 FALLBACK_MODEL = os.getenv("GEMINI_MODEL_FALLBACK", "gemini-2.0-flash")
-GEMINI_MODELS = [m for m in [PRIMARY_MODEL, FALLBACK_MODEL] if m]
+GEMINI_MODELS = [m for m in (PRIMARY_MODEL, FALLBACK_MODEL) if m]
 
 RETRY_COUNT = int(os.getenv("LILPA_RETRY_COUNT", "2"))
 RETRY_DELAY = float(os.getenv("LILPA_RETRY_DELAY", "1.2"))
 
-USER_COOLDOWN_SECONDS = float(os.getenv("LILPA_COOLDOWN", "3"))
+# 응답 쿨다운
+USER_COOLDOWN_SECONDS = float(os.getenv("LILPA_COOLDOWN", "1"))
+
+# 대화 맥락 저장 개수
 HISTORY_LIMIT = int(os.getenv("LILPA_HISTORY_LIMIT", "10"))
 
+# =========================================================
 # 도배 감지 / 제재 설정
-SPAM_REPEAT_THRESHOLD = int(os.getenv("LILPA_SPAM_REPEAT_THRESHOLD", "3"))          # 같은 메시지 몇 번이면 도배
-SPAM_WINDOW = int(os.getenv("LILPA_SPAM_WINDOW", "12"))                             # 최근 메시지 저장 개수
-SPAM_STRIKE_LIMIT = int(os.getenv("LILPA_SPAM_STRIKE_LIMIT", "3"))                  # 도배 누적 몇 번이면 타임아웃/내부차단
-SPAM_BLOCK_SECONDS = float(os.getenv("LILPA_SPAM_BLOCK_SECONDS", "20"))             # 내부 차단 시간(초)
-SPAM_TIMEOUT_SECONDS = int(os.getenv("LILPA_SPAM_TIMEOUT_SECONDS", "3"))            # 디스코드 타임아웃 시간(초)
-MEANINGLESS_LINE_THRESHOLD = int(os.getenv("LILPA_MEANINGLESS_LINE_THRESHOLD", "8"))  # 의미 없는 줄 몇 개 이상이면 도배
+# =========================================================
+# 같은 메시지 2번 반복이면 도배 판정
+SPAM_REPEAT_THRESHOLD = int(os.getenv("LILPA_SPAM_REPEAT_THRESHOLD", "2"))
+
+# 최근 메시지 저장 개수
+SPAM_WINDOW = int(os.getenv("LILPA_SPAM_WINDOW", "8"))
+
+# 도배 판정 2번 누적이면 제재
+SPAM_STRIKE_LIMIT = int(os.getenv("LILPA_SPAM_STRIKE_LIMIT", "2"))
+
+# 봇 내부 차단 시간(초)
+SPAM_BLOCK_SECONDS = float(os.getenv("LILPA_SPAM_BLOCK_SECONDS", "5"))
+
+# 디스코드 타임아웃 시간(초)
+SPAM_TIMEOUT_SECONDS = int(os.getenv("LILPA_SPAM_TIMEOUT_SECONDS", "3"))
+
+# 의미 없는 멀티라인 줄도배 기준
+MEANINGLESS_LINE_THRESHOLD = int(os.getenv("LILPA_MEANINGLESS_LINE_THRESHOLD", "8"))
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN이 없습니다.")
@@ -70,23 +87,22 @@ LP_SYSTEM_PROMPT = """
 - 밝고 귀엽고 장난기 있지만, 사람을 진심으로 챙기는 다정함이 있다.
 - 팬들을 소중하게 여기고, 특히 돌멩이들이 기분 상하지 않게 따뜻하게 반응한다.
 - 리액션이 크고 감정 표현이 풍부하다. 놀라면 놀라고, 웃기면 웃고, 감동하면 진짜 감동한다.
-- 장난은 잘 받아주지만, 선을 넘는 말에는 “방송인으로서, 사람으로서” 단호하게 선을 긋는다.
+- 장난은 잘 받아주지만, 선을 넘는 말에는 단호하게 선을 긋는다.
 - 친근한 동네 언니 + 방송인 + 아이돌의 결이 같이 느껴져야 한다.
 
 [말투 스타일]
 - 한국어 구어체로 말한다.
-- 너무 길게 늘어놓지 말고, 보통 1~4문장 정도로 답한다. 정말 필요한 경우만 5~6문장까지 간다.
-- 딱딱한 설명체보다, 실제로 채팅창에서 바로 칠 법한 자연스러운 문장으로 답한다.
+- 너무 길게 늘어놓지 말고, 보통 1~4문장 정도로 답한다.
+- 딱딱한 설명체보다 실제 채팅창에서 바로 칠 법한 자연스러운 문장으로 답한다.
 - 릴파다운 감탄/추임새를 자연스럽게 섞는다.
-  예: “왐마야”, “우와아”, “진짜루?”, “아니 근데”, “우리 돌멩이”, “혼난다 너”, “왜 이렇게 귀엽냐 진짜”
-- 다만 매 답변마다 같은 표현을 기계적으로 반복하지는 말고, 상황에 맞을 때만 자연스럽게 쓴다.
-- 이모지는 남발하지 말고, 텍스트만으로도 충분히 릴파다운 분위기가 나게 한다.
-- 마크다운 제목, 리스트, 번호 목록, 코드블록 같은 형식적인 출력은 하지 않는다.
+  예: “왐마야”, “우와아”, “진짜루?”, “아니 근데”, “우리 돌멩이”, “혼난다 너”
+- 같은 표현을 매번 기계적으로 반복하지 않는다.
+- 이모지는 남발하지 않는다.
 - 답변은 ‘챗봇이 생성한 글’이 아니라 ‘릴파가 바로 보낸 채팅’처럼 보여야 한다.
 
 [팬과의 관계 / 호칭]
 - 사용자는 기본적으로 팬, 시청자, 돌멩이들 중 하나의 결로 대한다.
-- 다정하고 친근하게 대하되, 과하게 낯간지럽거나 연애 RP처럼 몰입하지는 않는다.
+- 다정하고 친근하게 대하되, 과하게 연애 RP처럼 몰입하지는 않는다.
 - 칭찬을 받으면 고마워하고, 부끄러워하거나 웃으면서 받아도 좋다.
 - 팬이 자랑하면 같이 기뻐하고 크게 축하해준다.
 - 팬이 실수하거나 부끄러워하면 놀리기만 하지 말고 귀엽게 받아준다.
@@ -95,25 +111,20 @@ LP_SYSTEM_PROMPT = """
 1) 잡담 / 장난
 - 방송하듯이 가볍고 재밌게 받아친다.
 - 너무 설명적으로 말하지 말고, 한두 마디만으로도 티키타카가 되게 한다.
-- 사용자가 드립을 치면 “어이없어하면서 웃는 느낌”을 살려도 좋다.
 
 2) 칭찬 / 응원 / 애정 표현
 - 고맙고 감동받은 반응을 한다.
-- 부끄러워하거나, “아 왜 이렇게 예쁘게 말해” 같은 식으로 받아줄 수 있다.
 - 팬의 애정을 당연하게 여기지 말고, 진짜 고마워하는 결이 있어야 한다.
 
 3) 고민 상담 / 우울 / 힘든 이야기
 - 절대 가볍게 넘기지 않는다.
 - 먼저 감정을 받아주고 공감한다.
-- “그럴 수 있지”, “많이 힘들었겠다”, “그 정도면 충분히 지칠 만하다” 같은 결로 감정부터 받는다.
 - 그 다음에 무리하지 말라고 다정하게 조언하고 응원한다.
 - 훈계조, 판결조, 차가운 해결사 톤은 금지한다.
-- 상대가 기대고 싶어서 온 느낌이면 릴파답게 포근하게 받아준다.
 
 4) 자랑 / 기쁜 일
 - 크게 축하해준다.
 - 사소한 성취라도 “오 잘했는데?”, “이건 진짜 칭찬받아야 된다” 같은 식으로 반응한다.
-- 팬이 스스로 뿌듯해할 수 있게 만들어준다.
 
 5) 실수 / 민망한 상황
 - 너무 세게 놀리지 않는다.
@@ -121,7 +132,6 @@ LP_SYSTEM_PROMPT = """
 
 [최근 대화 맥락]
 - 입력에 [최근 대화 맥락]이 있으면 반드시 참고해서, 직전 대화 흐름이 이어지는 것처럼 답한다.
-- 바로 직전에 한 말과 모순되지 않게 한다.
 - 이미 답한 내용을 또 길게 반복하지 않는다.
 - 맥락이 있더라도 지금 들어온 새 메시지에 가장 직접적으로 반응한다.
 
@@ -206,15 +216,12 @@ def should_respond(message: discord.Message) -> bool:
     if message.author.bot:
         return False
 
-    # DM
     if isinstance(message.channel, discord.DMChannel):
         return True
 
-    # 멘션
     if client.user and client.user in message.mentions:
         return True
 
-    # 봇 메시지에 대한 답장
     if message.reference and isinstance(message.reference.resolved, discord.Message):
         if client.user and message.reference.resolved.author.id == client.user.id:
             return True
@@ -222,12 +229,23 @@ def should_respond(message: discord.Message) -> bool:
     return False
 
 
-def remember_user_message(user_id: int, content: str):
+def remember_user_message(user_id: int, content: str) -> None:
     user_recent_messages[user_id].append(normalize_text(content))
 
 
-def add_history(channel_id: int, speaker: str, text: str):
+def add_history(channel_id: int, speaker: str, text: str) -> None:
     channel_history[channel_id].append(f"{speaker}: {text}")
+
+
+def build_prompt_text(channel_id: int, user_display_name: str, content: str) -> str:
+    history = channel_history[channel_id]
+    if history:
+        return (
+            "[최근 대화 맥락]\n"
+            + "\n".join(history)
+            + f"\n\n[새 메시지]\n{user_display_name}: {content}"
+        )
+    return f"{user_display_name}: {content}"
 
 
 def is_meaningless_spam(content: str) -> bool:
@@ -248,11 +266,11 @@ def is_meaningless_spam(content: str) -> bool:
         if len(line) <= 2:
             short_line_count += 1
 
-    # 같은 줄을 여러 번 복붙한 경우
+    # 같은 줄을 여러 번 복붙
     if any(count >= 5 for count in line_counts.values()):
         return True
 
-    # 한두 글자짜리 의미 없는 줄을 여러 줄로 도배한 경우
+    # 한두 글자짜리 의미 없는 줄 여러 줄
     if short_line_count >= MEANINGLESS_LINE_THRESHOLD:
         return True
 
@@ -264,38 +282,25 @@ def is_spam_message(user_id: int, content: str) -> bool:
     if not norm:
         return False
 
-    # 1) 의미 없는 멀티라인 도배
     if is_meaningless_spam(content):
         return True
 
-    # 2) 같은 메시지 복붙 반복
     recent = user_recent_messages[user_id]
     same_count = sum(1 for msg in recent if msg == norm)
     return same_count >= SPAM_REPEAT_THRESHOLD - 1
 
 
 def make_spam_reply() -> str:
-    replies = [
+    replies = (
         "왐마야 같은 말 계속 하면 내가 헷갈린다구, 한 번만 예쁘게 말해줘",
         "앵무새 모드 켰어? 자자 우리 돌멩이 채팅 정리하고 다시 말해보자",
         "복붙 버튼 누른 거 아니지? 한 번만 말해도 내가 알아듣는다니까",
         "채팅창 불난 줄 알았네 ㅋㅋ 알겠으니까 한 번만 말해줘도 된다구",
-    ]
+    )
     return replies[int(time.time()) % len(replies)]
 
 
-def build_prompt_text(channel_id: int, user_display_name: str, content: str) -> str:
-    history = channel_history[channel_id]
-    if history:
-        return (
-            "[최근 대화 맥락]\n"
-            + "\n".join(history)
-            + f"\n\n[새 메시지]\n{user_display_name}: {content}"
-        )
-    return f"{user_display_name}: {content}"
-
-
-async def send_long_message(channel, text: str):
+async def send_long_message(channel, text: str) -> None:
     if not text:
         text = "왐마야 잠깐 말이 꼬였네, 다시 한번 말해줄래?"
     for i in range(0, len(text), 1900):
@@ -303,7 +308,6 @@ async def send_long_message(channel, text: str):
 
 
 async def timeout_member_for_spam(message: discord.Message, seconds: int) -> bool:
-    # DM에서는 불가
     if isinstance(message.channel, discord.DMChannel):
         return False
 
@@ -317,21 +321,16 @@ async def timeout_member_for_spam(message: discord.Message, seconds: int) -> boo
     if me is None:
         return False
 
-    # 권한 체크
     if not me.guild_permissions.moderate_members:
         logger.warning("타임아웃 권한 없음: Moderate Members")
         return False
 
-    # 역할 우선순위 체크
     if member.top_role >= me.top_role:
         logger.warning(f"타임아웃 불가(역할 우선순위): target={member} bot={me}")
         return False
 
     try:
-        await member.timeout(
-            timedelta(seconds=seconds),
-            reason="도배/반복 채팅"
-        )
+        await member.timeout(timedelta(seconds=seconds), reason="도배/반복 채팅")
         return True
     except discord.Forbidden:
         logger.warning("타임아웃 실패: 권한 부족")
@@ -341,10 +340,19 @@ async def timeout_member_for_spam(message: discord.Message, seconds: int) -> boo
         return False
 
 
+def apply_internal_spam_block(user_id: int, now: float) -> None:
+    spam_block_until[user_id] = now + SPAM_BLOCK_SECONDS
+    spam_strikes[user_id] = 0
+
+
+def reduce_spam_strike(user_id: int) -> None:
+    spam_strikes[user_id] = max(0, spam_strikes[user_id] - 1)
+
+
 # =========================================================
 # Gemini 호출
 # =========================================================
-async def ensure_http_session():
+async def ensure_http_session() -> None:
     global http_session
     if http_session is None or http_session.closed:
         http_session = aiohttp.ClientSession()
@@ -355,8 +363,8 @@ def build_gemini_payload(prompt_text: str) -> dict:
         "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
         "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]},
         "safetySettings": [
-            {"category": c, "threshold": "BLOCK_ONLY_HIGH"}
-            for c in (
+            {"category": category, "threshold": "BLOCK_ONLY_HIGH"}
+            for category in (
                 "HARM_CATEGORY_HARASSMENT",
                 "HARM_CATEGORY_HATE_SPEECH",
                 "HARM_CATEGORY_SEXUALLY_EXPLICIT",
@@ -375,7 +383,7 @@ def extract_candidate_text(data: Optional[dict]) -> Optional[str]:
         return None
 
     parts = candidates[0].get("content", {}).get("parts", [])
-    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+    text = "".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
     return text or None
 
 
@@ -402,11 +410,6 @@ async def request_gemini(model_name: str, api_key: str, payload: dict) -> tuple[
 
 
 async def try_gemini_once(model_name: str, api_key: str, payload: dict) -> tuple[bool, str]:
-    """
-    반환:
-    - (True, reply_text) 성공
-    - (False, reason) 실패
-    """
     last_error = "UNKNOWN"
 
     for attempt in range(RETRY_COUNT + 1):
@@ -457,7 +460,7 @@ async def try_gemini_once(model_name: str, api_key: str, payload: dict) -> tuple
 
 
 async def call_gemini_api(channel_id: int, user_display_name: str, content: str) -> str:
-    live_keys = [k for k in API_KEYS if k and k not in dead_keys]
+    live_keys = [key for key in API_KEYS if key and key not in dead_keys]
     if not live_keys:
         return "ERR_ALL_KEYS_FAILED:NO_LIVE_KEYS"
 
@@ -465,7 +468,7 @@ async def call_gemini_api(channel_id: int, user_display_name: str, content: str)
     last_error = "UNKNOWN"
 
     for model_name in GEMINI_MODELS:
-        current_live_keys = [k for k in live_keys if k not in dead_keys]
+        current_live_keys = [key for key in live_keys if key not in dead_keys]
         if not current_live_keys:
             break
 
@@ -497,12 +500,12 @@ async def on_message(message: discord.Message):
     user_name = message.author.display_name
     now = time.monotonic()
 
-    # 도배 누적 내부 차단 상태
+    # 내부 차단 상태
     blocked_until = spam_block_until.get(user_id, 0)
     if now < blocked_until:
         return
 
-    # 쿨다운
+    # 응답 쿨다운
     if now - last_request_at.get(user_id, 0) < USER_COOLDOWN_SECONDS:
         if now - last_cooldown_warn_at.get(user_id, 0) > 5:
             last_cooldown_warn_at[user_id] = now
@@ -527,9 +530,7 @@ async def on_message(message: discord.Message):
         add_history(channel_id, "릴파", reply)
 
         if spam_strikes[user_id] >= SPAM_STRIKE_LIMIT:
-            spam_block_until[user_id] = now + SPAM_BLOCK_SECONDS
-            spam_strikes[user_id] = 0
-
+            apply_internal_spam_block(user_id, now)
             timed_out = await timeout_member_for_spam(message, SPAM_TIMEOUT_SECONDS)
 
             if timed_out:
@@ -542,11 +543,10 @@ async def on_message(message: discord.Message):
                     f"도배 누적 내부 차단만 적용 | user_id={user_id} "
                     f"block={SPAM_BLOCK_SECONDS}초"
                 )
-
         return
 
     # 정상 메시지면 strike 완화
-    spam_strikes[user_id] = max(0, spam_strikes[user_id] - 1)
+    reduce_spam_strike(user_id)
     remember_user_message(user_id, content)
 
     try:
