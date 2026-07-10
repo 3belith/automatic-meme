@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import time
@@ -17,27 +18,25 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-API_KEYS = [
-    os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)
-]
+API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 7)]
 API_KEYS = [k for k in API_KEYS if k]
 
-# 모델은 여러 개 둘 수 있게 유지
 PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 FALLBACK_MODEL = os.getenv("GEMINI_MODEL_FALLBACK", "gemini-2.0-flash")
 GEMINI_MODELS = [m for m in [PRIMARY_MODEL, FALLBACK_MODEL] if m]
 
-# 재시도
 RETRY_COUNT = int(os.getenv("LILPA_RETRY_COUNT", "2"))
 RETRY_DELAY = float(os.getenv("LILPA_RETRY_DELAY", "1.2"))
 
-# 유저 쿨다운 / 최근 대화 저장 개수
 USER_COOLDOWN_SECONDS = float(os.getenv("LILPA_COOLDOWN", "3"))
 HISTORY_LIMIT = int(os.getenv("LILPA_HISTORY_LIMIT", "10"))
 
-# 도배 감지
-SPAM_REPEAT_THRESHOLD = int(os.getenv("LILPA_SPAM_REPEAT_THRESHOLD", "3"))
-SPAM_WINDOW = int(os.getenv("LILPA_SPAM_SIMILAR_WINDOW", "5"))
+# 도배 감지 설정
+SPAM_REPEAT_THRESHOLD = int(os.getenv("LILPA_SPAM_REPEAT_THRESHOLD", "3"))     # 같은 메시지 몇 번이면 도배
+SPAM_WINDOW = int(os.getenv("LILPA_SPAM_WINDOW", "12"))                        # 최근 메시지 저장 개수
+SPAM_STRIKE_LIMIT = int(os.getenv("LILPA_SPAM_STRIKE_LIMIT", "3"))             # 도배 누적 몇 번이면 임시 차단
+SPAM_BLOCK_SECONDS = float(os.getenv("LILPA_SPAM_BLOCK_SECONDS", "20"))        # 임시 차단 시간(초)
+MEANINGLESS_LINE_THRESHOLD = int(os.getenv("LILPA_MEANINGLESS_LINE_THRESHOLD", "8"))  # 의미 없는 줄 몇 개 이상이면 도배
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN이 없습니다.")
@@ -54,7 +53,7 @@ logging.basicConfig(
 logger = logging.getLogger("LILPA_BOT")
 
 # =========================================================
-# 릴파 시스템 프롬프트 (강화형)
+# 릴파 시스템 프롬프트
 # =========================================================
 LP_SYSTEM_PROMPT = """
 너는 버추얼 아이돌 그룹 이세계아이돌의 멤버 ‘릴파’다.
@@ -126,17 +125,22 @@ LP_SYSTEM_PROMPT = """
 - 맥락이 있더라도 지금 들어온 새 메시지에 가장 직접적으로 반응한다.
 
 [도배 / 반복 / 의미 없는 채팅]
-- 같은 말을 반복하거나, 의미 없는 자모음/복붙/도배를 하면 유쾌하게 제지한다.
+- 같은 말을 반복하거나, 의미 없는 복붙/줄도배를 하면 유쾌하게 제지한다.
 - 너무 화내지는 말고 “한 번만 말해도 알아듣는다”, “앵무새 모드냐”, “채팅창 진정하자” 같은 식으로 가볍게 정리한다.
 - 이 경우에는 [[DELETE]]를 붙이지 않는다.
 
-[선 넘는 채팅 대응]
-다음과 같은 내용은 장난으로 넘기지 말고 즉시 텐션을 낮추고 단호하게 반응한다.
-- 혐오 표현, 인신공격, 악의적 비하
-- 심한 성희롱, 불쾌한 성적 대상화
-- 팬덤 분란 유도, 특정인 조리돌림 유도
-- 누군가를 노골적으로 상처 주거나 공격하려는 말
-- 정상적인 대화가 아니라 불쾌감/모욕감을 주는 것이 목적처럼 보이는 말
+[성적인 드립 / 선 넘는 채팅 대응]
+- 가벼운 섹드립, 민망한 농담, 짓궂은 성적 드립은 무조건 삭제하지 않는다.
+- 수위가 낮고 장난 수준이면 민망해하거나 가볍게 선을 긋는 정도로 반응한다.
+- 다만 아래 경우에는 장난으로 넘기지 말고 즉시 텐션을 낮추고 단호하게 반응한다.
+  1) 노골적인 성행위 묘사/요구
+  2) 특정 신체 부위를 집요하게 성적으로 소비하는 발언
+  3) 반복적인 성희롱/불쾌한 성적 대상화
+  4) 상대를 불쾌하게 만들 목적이 뚜렷한 성적 발언
+  5) 혐오 표현, 인신공격, 악의적 비하
+  6) 팬덤 분란 유도, 특정인 조리돌림 유도
+  7) 누군가를 노골적으로 상처 주거나 공격하려는 말
+  8) 정상적인 대화가 아니라 불쾌감/모욕감을 주는 것이 목적인 말
 
 이 경우 규칙:
 - 웃기려고 받아주지 않는다.
@@ -171,17 +175,20 @@ dead_keys: set[str] = set()
 # 채널별 최근 대화
 channel_history = defaultdict(lambda: deque(maxlen=HISTORY_LIMIT))
 
-# 유저별 마지막 요청 시각
+# 유저별 상태
 last_request_at: dict[int, float] = {}
-
-# 유저별 최근 메시지
+last_cooldown_warn_at: dict[int, float] = {}
 user_recent_messages = defaultdict(lambda: deque(maxlen=SPAM_WINDOW))
+spam_strikes = defaultdict(int)
+spam_block_until: dict[int, float] = {}
 
 # =========================================================
 # 유틸
 # =========================================================
 def normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().lower())
+    text = text.strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 def strip_mention(content: str) -> str:
@@ -214,30 +221,56 @@ def should_respond(message: discord.Message) -> bool:
     return False
 
 
-def is_spam_message(user_id: int, content: str) -> bool:
-    norm = normalize_text(content)
-    if not norm:
+def remember_user_message(user_id: int, content: str):
+    user_recent_messages[user_id].append(normalize_text(content))
+
+
+def add_history(channel_id: int, speaker: str, text: str):
+    channel_history[channel_id].append(f"{speaker}: {text}")
+
+
+def is_meaningless_spam(content: str) -> bool:
+    raw = content.strip()
+    if not raw:
         return False
 
-    # 같은 메시지 반복
-    recent = user_recent_messages[user_id]
-    same_count = sum(1 for msg in recent if msg == norm)
-    if same_count >= SPAM_REPEAT_THRESHOLD - 1:
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if len(lines) < MEANINGLESS_LINE_THRESHOLD:
+        return False
+
+    normalized_lines = [normalize_text(line) for line in lines]
+    line_counts = defaultdict(int)
+    short_line_count = 0
+
+    for line in normalized_lines:
+        line_counts[line] += 1
+        if len(line) <= 2:
+            short_line_count += 1
+
+    # 같은 줄을 여러 번 복붙한 경우
+    if any(count >= 5 for count in line_counts.values()):
         return True
 
-    # ㅋㅋㅋㅋㅋㅋ / ㅠㅠㅠㅠㅠ / 같은 짧은 패턴 반복
-    if re.fullmatch(r"(.)\1{7,}", norm):
-        return True
-    if re.fullmatch(r"[ㅋㅎㅠㅜㄷㅇ!?.,~\-_=+]{8,}", norm):
-        return True
-    if re.fullmatch(r"(.{1,4})\1{3,}", norm):
+    # 한두 글자짜리 의미 없는 줄을 여러 줄로 도배한 경우
+    if short_line_count >= MEANINGLESS_LINE_THRESHOLD:
         return True
 
     return False
 
 
-def remember_user_message(user_id: int, content: str):
-    user_recent_messages[user_id].append(normalize_text(content))
+def is_spam_message(user_id: int, content: str) -> bool:
+    norm = normalize_text(content)
+    if not norm:
+        return False
+
+    # 1) 의미 없는 멀티라인 도배
+    if is_meaningless_spam(content):
+        return True
+
+    # 2) 같은 메시지 복붙 반복
+    recent = user_recent_messages[user_id]
+    same_count = sum(1 for msg in recent if msg == norm)
+    return same_count >= SPAM_REPEAT_THRESHOLD - 1
 
 
 def make_spam_reply() -> str:
@@ -271,12 +304,43 @@ async def send_long_message(channel, text: str):
 # =========================================================
 # Gemini 호출
 # =========================================================
-async def request_gemini(model_name: str, api_key: str, payload: dict) -> tuple[int, str, Optional[dict]]:
-    """Gemini 1회 요청. 반환: (status, raw_text, json_data_or_none)"""
+async def ensure_http_session():
     global http_session
-
     if http_session is None or http_session.closed:
         http_session = aiohttp.ClientSession()
+
+
+def build_gemini_payload(prompt_text: str) -> dict:
+    return {
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+        "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]},
+        "safetySettings": [
+            {"category": c, "threshold": "BLOCK_ONLY_HIGH"}
+            for c in (
+                "HARM_CATEGORY_HARASSMENT",
+                "HARM_CATEGORY_HATE_SPEECH",
+                "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "HARM_CATEGORY_DANGEROUS_CONTENT",
+            )
+        ],
+    }
+
+
+def extract_candidate_text(data: Optional[dict]) -> Optional[str]:
+    if not data:
+        return None
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        return None
+
+    parts = candidates[0].get("content", {}).get("parts", [])
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+    return text or None
+
+
+async def request_gemini(model_name: str, api_key: str, payload: dict) -> tuple[int, str, Optional[dict]]:
+    await ensure_http_session()
 
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -297,29 +361,67 @@ async def request_gemini(model_name: str, api_key: str, payload: dict) -> tuple[
         return resp.status, raw, None
 
 
-async def call_gemini_api(channel_id: int, user_display_name: str, content: str) -> str:
-    global dead_keys
+async def try_gemini_once(model_name: str, api_key: str, payload: dict) -> tuple[bool, str]:
+    """
+    반환:
+    - (True, reply_text) 성공
+    - (False, reason) 실패
+    """
+    last_error = "UNKNOWN"
 
-    live_keys = [k for k in API_KEYS if k not in dead_keys]
+    for attempt in range(RETRY_COUNT + 1):
+        try:
+            status, raw, data = await request_gemini(model_name, api_key, payload)
+
+            if status == 200:
+                text = extract_candidate_text(data)
+                if text:
+                    return True, text
+                return False, "EMPTY_TEXT"
+
+            if status == 403:
+                dead_keys.add(api_key)
+                logger.warning(f"403 키 dead 처리 | model={model_name}")
+                return False, "HTTP_403"
+
+            if status in (429, 503):
+                last_error = f"HTTP_{status}"
+                if attempt < RETRY_COUNT:
+                    await asyncio.sleep(RETRY_DELAY * (2 ** attempt))
+                    continue
+                return False, last_error
+
+            logger.warning(f"Gemini 실패 | model={model_name} status={status} detail={raw[:200]}")
+            return False, f"HTTP_{status}"
+
+        except asyncio.TimeoutError:
+            last_error = "TIMEOUT"
+            if attempt < RETRY_COUNT:
+                await asyncio.sleep(RETRY_DELAY * (2 ** attempt))
+                continue
+            return False, last_error
+
+        except aiohttp.ClientError as e:
+            last_error = "CONN_ERROR"
+            logger.warning(f"연결 오류 | model={model_name} error={e}")
+            if attempt < RETRY_COUNT:
+                await asyncio.sleep(RETRY_DELAY * (2 ** attempt))
+                continue
+            return False, last_error
+
+        except Exception as e:
+            logger.exception(f"예상치 못한 오류 | model={model_name} error={e}")
+            return False, f"UNEXPECTED_{type(e).__name__}"
+
+    return False, last_error
+
+
+async def call_gemini_api(channel_id: int, user_display_name: str, content: str) -> str:
+    live_keys = [k for k in API_KEYS if k and k not in dead_keys]
     if not live_keys:
         return "ERR_ALL_KEYS_FAILED:NO_LIVE_KEYS"
 
-    prompt_text = build_prompt_text(channel_id, user_display_name, content)
-
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-        "systemInstruction": {"parts": [{"text": LP_SYSTEM_PROMPT}]},
-        "safetySettings": [
-            {"category": c, "threshold": "BLOCK_ONLY_HIGH"}
-            for c in (
-                "HARM_CATEGORY_HARASSMENT",
-                "HARM_CATEGORY_HATE_SPEECH",
-                "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "HARM_CATEGORY_DANGEROUS_CONTENT",
-            )
-        ],
-    }
-
+    payload = build_gemini_payload(build_prompt_text(channel_id, user_display_name, content))
     last_error = "UNKNOWN"
 
     for model_name in GEMINI_MODELS:
@@ -328,68 +430,11 @@ async def call_gemini_api(channel_id: int, user_display_name: str, content: str)
             break
 
         for key in current_live_keys:
-            for attempt in range(RETRY_COUNT + 1):
-                try:
-                    status, raw, data = await request_gemini(model_name, key, payload)
-
-                    if status == 200:
-                        if not data:
-                            last_error = "BAD_JSON"
-                            break
-
-                        candidates = data.get("candidates") or []
-                        if not candidates:
-                            last_error = "EMPTY_CANDIDATES"
-                            break
-
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        text = "".join(
-                            p.get("text", "") for p in parts if isinstance(p, dict)
-                        ).strip()
-
-                        if text:
-                            logger.info(f"Gemini 응답 성공 | model={model_name}")
-                            return text
-
-                        last_error = "EMPTY_TEXT"
-                        break
-
-                    if status == 403:
-                        dead_keys.add(key)
-                        last_error = "HTTP_403"
-                        logger.warning(f"403 키 dead 처리 | model={model_name}")
-                        break
-
-                    if status in (429, 503):
-                        last_error = f"HTTP_{status}"
-                        if attempt < RETRY_COUNT:
-                            await asyncio.sleep(RETRY_DELAY * (2 ** attempt))
-                            continue
-                        break
-
-                    last_error = f"HTTP_{status}"
-                    logger.warning(f"Gemini 실패 | model={model_name} status={status} detail={raw[:200]}")
-                    break
-
-                except asyncio.TimeoutError:
-                    last_error = "TIMEOUT"
-                    if attempt < RETRY_COUNT:
-                        await asyncio.sleep(RETRY_DELAY * (2 ** attempt))
-                        continue
-                    break
-
-                except aiohttp.ClientError as e:
-                    last_error = "CONN_ERROR"
-                    logger.warning(f"연결 오류 | model={model_name} error={e}")
-                    if attempt < RETRY_COUNT:
-                        await asyncio.sleep(RETRY_DELAY * (2 ** attempt))
-                        continue
-                    break
-
-                except Exception as e:
-                    last_error = f"UNEXPECTED_{type(e).__name__}"
-                    logger.exception(f"예상치 못한 오류 | model={model_name} error={e}")
-                    break
+            ok, result = await try_gemini_once(model_name, key, payload)
+            if ok:
+                logger.info(f"Gemini 응답 성공 | model={model_name}")
+                return result
+            last_error = result
 
     return f"ERR_ALL_KEYS_FAILED:{last_error}"
 
@@ -408,38 +453,53 @@ async def on_message(message: discord.Message):
         return
 
     user_id = message.author.id
+    channel_id = message.channel.id
+    user_name = message.author.display_name
     now = time.monotonic()
 
-    # 유저 쿨다운
-    if now - last_request_at.get(user_id, 0) < USER_COOLDOWN_SECONDS:
+    # 도배 누적 차단 상태
+    blocked_until = spam_block_until.get(user_id, 0)
+    if now < blocked_until:
         return
+
+    # 쿨다운
+    if now - last_request_at.get(user_id, 0) < USER_COOLDOWN_SECONDS:
+        if now - last_cooldown_warn_at.get(user_id, 0) > 5:
+            last_cooldown_warn_at[user_id] = now
+            await message.channel.send("잠깐잠깐~ 한 번에 하나씩만 말해줘도 내가 다 본다구")
+        return
+
     last_request_at[user_id] = now
 
     content = strip_mention(message.content)
     if not content:
         return
 
-    # 도배 감지 -> API 호출 안 함
+    # 도배 감지
     if is_spam_message(user_id, content):
-        reply = make_spam_reply()
+        spam_strikes[user_id] += 1
         remember_user_message(user_id, content)
 
-        history = channel_history[message.channel.id]
-        history.append(f"{message.author.display_name}: {content}")
-        history.append(f"릴파: {reply}")
-
+        reply = make_spam_reply()
         await send_long_message(message.channel, reply)
+
+        add_history(channel_id, user_name, content)
+        add_history(channel_id, "릴파", reply)
+
+        if spam_strikes[user_id] >= SPAM_STRIKE_LIMIT:
+            spam_block_until[user_id] = now + SPAM_BLOCK_SECONDS
+            spam_strikes[user_id] = 0
+            logger.info(f"도배 누적 차단 | user_id={user_id} {SPAM_BLOCK_SECONDS}초")
+
         return
 
+    # 정상 메시지면 strike 완화
+    spam_strikes[user_id] = max(0, spam_strikes[user_id] - 1)
     remember_user_message(user_id, content)
 
     try:
         async with message.channel.typing():
-            reply = await call_gemini_api(
-                message.channel.id,
-                message.author.display_name,
-                content,
-            )
+            reply = await call_gemini_api(channel_id, user_name, content)
     except Exception as e:
         logger.exception(f"메시지 처리 중 오류: {e}")
         await message.channel.send("왐마야, 잠깐 머리가 띵했어… 조금 있다가 다시 불러줘")
@@ -452,18 +512,14 @@ async def on_message(message: discord.Message):
 
     should_delete = DELETE_TOKEN in reply
     clean_reply = reply.replace(DELETE_TOKEN, "").strip()
-
     if not clean_reply:
         clean_reply = "왐마야 잠깐 말이 꼬였네, 다시 한번 말해줄래?"
 
     await send_long_message(message.channel, clean_reply)
 
-    # 문맥 저장
-    history = channel_history[message.channel.id]
-    history.append(f"{message.author.display_name}: {content}")
-    history.append(f"릴파: {clean_reply}")
+    add_history(channel_id, user_name, content)
+    add_history(channel_id, "릴파", clean_reply)
 
-    # 필요 시 원문 메시지 삭제
     if should_delete:
         try:
             await message.delete()
@@ -489,3 +545,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
