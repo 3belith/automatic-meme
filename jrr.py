@@ -29,11 +29,20 @@ GEMINI_MODELS = [m for m in (PRIMARY_MODEL, FALLBACK_MODEL) if m]
 RETRY_COUNT = int(os.getenv("LILPA_RETRY_COUNT", "2"))
 RETRY_DELAY = float(os.getenv("LILPA_RETRY_DELAY", "1.2"))
 
-# 응답 쿨다운
-USER_COOLDOWN_SECONDS = float(os.getenv("LILPA_COOLDOWN", "1"))
+# 일반 응답 쿨다운
+USER_COOLDOWN_SECONDS = float(os.getenv("LILPA_COOLDOWN", "0.8"))
 
 # 대화 맥락 저장 개수
 HISTORY_LIMIT = int(os.getenv("LILPA_HISTORY_LIMIT", "10"))
+
+# =========================================================
+# 배치 응답 설정
+# =========================================================
+# 유저가 여러 번 이어서 말할 때 마지막 메시지 이후 이 시간 동안 기다렸다가 한 번에 답변
+BATCH_WAIT_SECONDS = float(os.getenv("LILPA_BATCH_WAIT_SECONDS", "2.5"))
+
+# 한 번에 묶을 최대 메시지 수
+MAX_BATCH_MESSAGES = int(os.getenv("LILPA_MAX_BATCH_MESSAGES", "5"))
 
 # =========================================================
 # 도배 감지 / 제재 설정
@@ -193,6 +202,10 @@ user_recent_messages = defaultdict(lambda: deque(maxlen=SPAM_WINDOW))
 spam_strikes = defaultdict(int)
 spam_block_until: dict[int, float] = {}
 
+# 배치 응답 상태
+pending_batches: dict[int, dict] = {}
+batch_tasks: dict[int, asyncio.Task] = {}
+
 # =========================================================
 # 유틸
 # =========================================================
@@ -246,6 +259,18 @@ def build_prompt_text(channel_id: int, user_display_name: str, content: str) -> 
             + f"\n\n[새 메시지]\n{user_display_name}: {content}"
         )
     return f"{user_display_name}: {content}"
+
+
+def build_batched_user_content(messages: list[str]) -> str:
+    if len(messages) == 1:
+        return messages[0]
+
+    combined = "\n".join(f"{idx + 1}. {msg}" for idx, msg in enumerate(messages))
+    return (
+        "사용자가 짧은 시간 안에 이어서 보낸 메시지 묶음이야. "
+        "흐름을 자연스럽게 읽고, 하나의 대화처럼 한 번에 답해줘.\n\n"
+        f"{combined}"
+    )
 
 
 def is_meaningless_spam(content: str) -> bool:
@@ -347,6 +372,11 @@ def apply_internal_spam_block(user_id: int, now: float) -> None:
 
 def reduce_spam_strike(user_id: int) -> None:
     spam_strikes[user_id] = max(0, spam_strikes[user_id] - 1)
+
+
+def clear_user_batch(user_id: int) -> None:
+    pending_batches.pop(user_id, None)
+    batch_tasks.pop(user_id, None)
 
 
 # =========================================================
@@ -483,6 +513,92 @@ async def call_gemini_api(channel_id: int, user_display_name: str, content: str)
 
 
 # =========================================================
+# 배치 응답 처리
+# =========================================================
+def queue_user_batch(message: discord.Message, content: str) -> None:
+    user_id = message.author.id
+    batch = pending_batches.get(user_id)
+
+    if batch is None or batch["channel_id"] != message.channel.id:
+        pending_batches[user_id] = {
+            "channel_id": message.channel.id,
+            "channel": message.channel,
+            "user_name": message.author.display_name,
+            "source_message": message,   # 타임아웃용 참조
+            "messages": [content],
+        }
+    else:
+        batch["user_name"] = message.author.display_name
+        batch["source_message"] = message
+        if len(batch["messages"]) < MAX_BATCH_MESSAGES:
+            batch["messages"].append(content)
+        else:
+            # 최대 개수 초과 시 마지막 항목에 이어붙여서 손실 최소화
+            batch["messages"][-1] = batch["messages"][-1] + "\n" + content
+
+    old_task = batch_tasks.get(user_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    batch_tasks[user_id] = asyncio.create_task(flush_user_batch(user_id))
+
+
+async def flush_user_batch(user_id: int) -> None:
+    try:
+        await asyncio.sleep(BATCH_WAIT_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+    batch = pending_batches.get(user_id)
+    if not batch:
+        return
+
+    channel = batch["channel"]
+    channel_id = batch["channel_id"]
+    user_name = batch["user_name"]
+    source_message = batch["source_message"]
+    messages = batch["messages"][:MAX_BATCH_MESSAGES]
+
+    prompt_content = build_batched_user_content(messages)
+
+    try:
+        async with channel.typing():
+            reply = await call_gemini_api(channel_id, user_name, prompt_content)
+    except Exception as e:
+        logger.exception(f"배치 메시지 처리 중 오류: {e}")
+        await channel.send("왐마야, 잠깐 머리가 띵했어… 조금 있다가 다시 불러줘")
+        clear_user_batch(user_id)
+        return
+
+    if reply.startswith("ERR_"):
+        logger.error(reply)
+        await channel.send("왐마야, 지금 내가 잠깐 바쁜가봐… 조금 있다가 다시 불러줘")
+        clear_user_batch(user_id)
+        return
+
+    should_delete = DELETE_TOKEN in reply
+    clean_reply = reply.replace(DELETE_TOKEN, "").strip()
+    if not clean_reply:
+        clean_reply = "왐마야 잠깐 말이 꼬였네, 다시 한번 말해줄래?"
+
+    await send_long_message(channel, clean_reply)
+
+    merged_user_text = " / ".join(messages)
+    add_history(channel_id, user_name, merged_user_text)
+    add_history(channel_id, "릴파", clean_reply)
+
+    if should_delete:
+        try:
+            await source_message.delete()
+        except discord.Forbidden:
+            logger.warning("메시지 삭제 권한 없음")
+        except discord.HTTPException as e:
+            logger.warning(f"메시지 삭제 실패: {e}")
+
+    clear_user_batch(user_id)
+
+
+# =========================================================
 # 디스코드 이벤트
 # =========================================================
 @client.event
@@ -531,6 +647,13 @@ async def on_message(message: discord.Message):
 
         if spam_strikes[user_id] >= SPAM_STRIKE_LIMIT:
             apply_internal_spam_block(user_id, now)
+
+            # 이미 모아둔 배치가 있으면 날림
+            task = batch_tasks.get(user_id)
+            if task and not task.done():
+                task.cancel()
+            pending_batches.pop(user_id, None)
+
             timed_out = await timeout_member_for_spam(message, SPAM_TIMEOUT_SECONDS)
 
             if timed_out:
@@ -549,36 +672,8 @@ async def on_message(message: discord.Message):
     reduce_spam_strike(user_id)
     remember_user_message(user_id, content)
 
-    try:
-        async with message.channel.typing():
-            reply = await call_gemini_api(channel_id, user_name, content)
-    except Exception as e:
-        logger.exception(f"메시지 처리 중 오류: {e}")
-        await message.channel.send("왐마야, 잠깐 머리가 띵했어… 조금 있다가 다시 불러줘")
-        return
-
-    if reply.startswith("ERR_"):
-        logger.error(reply)
-        await message.channel.send("왐마야, 지금 내가 잠깐 바쁜가봐… 조금 있다가 다시 불러줘")
-        return
-
-    should_delete = DELETE_TOKEN in reply
-    clean_reply = reply.replace(DELETE_TOKEN, "").strip()
-    if not clean_reply:
-        clean_reply = "왐마야 잠깐 말이 꼬였네, 다시 한번 말해줄래?"
-
-    await send_long_message(message.channel, clean_reply)
-
-    add_history(channel_id, user_name, content)
-    add_history(channel_id, "릴파", clean_reply)
-
-    if should_delete:
-        try:
-            await message.delete()
-        except discord.Forbidden:
-            logger.warning("메시지 삭제 권한 없음")
-        except discord.HTTPException as e:
-            logger.warning(f"메시지 삭제 실패: {e}")
+    # 배치 큐에 적재하고, 일정 시간 조용해지면 한 번에 답변
+    queue_user_batch(message, content)
 
 
 # =========================================================
