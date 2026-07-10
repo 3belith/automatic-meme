@@ -3,6 +3,7 @@ import re
 import time
 import asyncio
 import logging
+from datetime import timedelta
 from collections import defaultdict, deque
 from typing import Optional
 
@@ -30,11 +31,12 @@ RETRY_DELAY = float(os.getenv("LILPA_RETRY_DELAY", "1.2"))
 USER_COOLDOWN_SECONDS = float(os.getenv("LILPA_COOLDOWN", "3"))
 HISTORY_LIMIT = int(os.getenv("LILPA_HISTORY_LIMIT", "10"))
 
-# 도배 감지 설정
-SPAM_REPEAT_THRESHOLD = int(os.getenv("LILPA_SPAM_REPEAT_THRESHOLD", "3"))     # 같은 메시지 몇 번이면 도배
-SPAM_WINDOW = int(os.getenv("LILPA_SPAM_WINDOW", "12"))                        # 최근 메시지 저장 개수
-SPAM_STRIKE_LIMIT = int(os.getenv("LILPA_SPAM_STRIKE_LIMIT", "3"))             # 도배 누적 몇 번이면 임시 차단
-SPAM_BLOCK_SECONDS = float(os.getenv("LILPA_SPAM_BLOCK_SECONDS", "20"))        # 임시 차단 시간(초)
+# 도배 감지 / 제재 설정
+SPAM_REPEAT_THRESHOLD = int(os.getenv("LILPA_SPAM_REPEAT_THRESHOLD", "3"))          # 같은 메시지 몇 번이면 도배
+SPAM_WINDOW = int(os.getenv("LILPA_SPAM_WINDOW", "12"))                             # 최근 메시지 저장 개수
+SPAM_STRIKE_LIMIT = int(os.getenv("LILPA_SPAM_STRIKE_LIMIT", "3"))                  # 도배 누적 몇 번이면 타임아웃/내부차단
+SPAM_BLOCK_SECONDS = float(os.getenv("LILPA_SPAM_BLOCK_SECONDS", "20"))             # 내부 차단 시간(초)
+SPAM_TIMEOUT_SECONDS = int(os.getenv("LILPA_SPAM_TIMEOUT_SECONDS", "3"))            # 디스코드 타임아웃 시간(초)
 MEANINGLESS_LINE_THRESHOLD = int(os.getenv("LILPA_MEANINGLESS_LINE_THRESHOLD", "8"))  # 의미 없는 줄 몇 개 이상이면 도배
 
 if not DISCORD_TOKEN:
@@ -300,6 +302,45 @@ async def send_long_message(channel, text: str):
         await channel.send(text[i:i + 1900])
 
 
+async def timeout_member_for_spam(message: discord.Message, seconds: int) -> bool:
+    # DM에서는 불가
+    if isinstance(message.channel, discord.DMChannel):
+        return False
+
+    guild = message.guild
+    member = message.author
+
+    if guild is None or not isinstance(member, discord.Member):
+        return False
+
+    me = guild.me
+    if me is None:
+        return False
+
+    # 권한 체크
+    if not me.guild_permissions.moderate_members:
+        logger.warning("타임아웃 권한 없음: Moderate Members")
+        return False
+
+    # 역할 우선순위 체크
+    if member.top_role >= me.top_role:
+        logger.warning(f"타임아웃 불가(역할 우선순위): target={member} bot={me}")
+        return False
+
+    try:
+        await member.timeout(
+            timedelta(seconds=seconds),
+            reason="도배/반복 채팅"
+        )
+        return True
+    except discord.Forbidden:
+        logger.warning("타임아웃 실패: 권한 부족")
+        return False
+    except discord.HTTPException as e:
+        logger.warning(f"타임아웃 실패: {e}")
+        return False
+
+
 # =========================================================
 # Gemini 호출
 # =========================================================
@@ -456,7 +497,7 @@ async def on_message(message: discord.Message):
     user_name = message.author.display_name
     now = time.monotonic()
 
-    # 도배 누적 차단 상태
+    # 도배 누적 내부 차단 상태
     blocked_until = spam_block_until.get(user_id, 0)
     if now < blocked_until:
         return
@@ -488,7 +529,19 @@ async def on_message(message: discord.Message):
         if spam_strikes[user_id] >= SPAM_STRIKE_LIMIT:
             spam_block_until[user_id] = now + SPAM_BLOCK_SECONDS
             spam_strikes[user_id] = 0
-            logger.info(f"도배 누적 차단 | user_id={user_id} {SPAM_BLOCK_SECONDS}초")
+
+            timed_out = await timeout_member_for_spam(message, SPAM_TIMEOUT_SECONDS)
+
+            if timed_out:
+                logger.info(
+                    f"도배 누적 타임아웃 | user_id={user_id} "
+                    f"timeout={SPAM_TIMEOUT_SECONDS}초 block={SPAM_BLOCK_SECONDS}초"
+                )
+            else:
+                logger.info(
+                    f"도배 누적 내부 차단만 적용 | user_id={user_id} "
+                    f"block={SPAM_BLOCK_SECONDS}초"
+                )
 
         return
 
