@@ -9,6 +9,7 @@ import logging
 import base64
 import aiohttp
 import discord
+from dotenv import load_dotenv  # 은근슬쩍 빠졌던 필수 패키지 추가!
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Any, Optional
@@ -135,7 +136,7 @@ LILPA_REINFORCEMENT_PROMPT = """
 # ==============================================================================
 @dataclass
 class HyperConfig:
-    TOKEN: str = os.getenv("DISCORD_TOKEN", "YOUR_DISCORD_TOKEN_HERE")
+    TOKEN: str = field(default_factory=lambda: os.getenv("DISCORD_TOKEN", "YOUR_DISCORD_TOKEN_HERE"))
     API_KEYS: List[str] = field(default_factory=lambda: [
         os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 21) if os.getenv(f"GEMINI_API_KEY_{i}")
     ])
@@ -196,7 +197,7 @@ class MetricsTracker:
 class ApiHealthManager:
     def __init__(self, keys: List[str]):
         if not keys:
-            keys = ["DUMMY_KEY_FOR_TESTING"] # 키가 없으면 기본값 방어
+            keys = ["DUMMY_KEY_FOR_TESTING"]
         self.metrics: Dict[str, ApiMetrics] = {key: ApiMetrics() for key in keys}
         self.lock = asyncio.Lock()
 
@@ -206,7 +207,6 @@ class ApiHealthManager:
             available_keys = [k for k, m in self.metrics.items() if m.cooldown_until <= now]
             
             if not available_keys:
-                # 모든 키가 죽었다면 가장 빨리 살아나는 키(Dead Key Fallback)
                 return min(self.metrics.keys(), key=lambda k: self.metrics[k].cooldown_until)
 
             def compute_health_score(k: str) -> float:
@@ -216,11 +216,9 @@ class ApiHealthManager:
                 avg_latency = m.total_latency / max(1, m.success_count)
                 time_since_last = now - m.last_used_time
                 
-                # 가중치: 성공률 50%, 빠른 속도 30%, 미사용 시간 20%
                 latency_score = max(0, 5.0 - avg_latency) / 5.0 
                 return (success_rate * 50) + (latency_score * 30) + (min(time_since_last, 60) / 60 * 20)
 
-            # Health Score 최고점 키 선택
             return max(available_keys, key=compute_health_score)
 
     async def report_status(self, key: str, success: bool, latency: float, status_code: int = 200, error_type: str = ""):
@@ -232,14 +230,13 @@ class ApiHealthManager:
             if success:
                 m.success_count += 1
                 m.total_latency += latency
-                # 성공 시 에러 카운트 서서히 감소 (회복)
                 m.errors_429 = max(0, m.errors_429 - 1)
                 m.errors_500 = max(0, m.errors_500 - 1)
             else:
                 m.fail_count += 1
                 if status_code == 429:
                     m.errors_429 += 1
-                    m.cooldown_until = now + (30 * m.errors_429)  # Exponential 백오프
+                    m.cooldown_until = now + (30 * m.errors_429)
                 elif status_code == 500:
                     m.errors_500 += 1
                     m.cooldown_until = now + (10 * m.errors_500)
@@ -273,37 +270,31 @@ class CharacterEvaluator20:
             "이모지금지": 15, "반복표현": 10, "문장길이": 10, "방송텐션": 10
         }
 
-        # 1. 반말 유지 및 존댓말 여부 검사
         if HONORIFIC_RE.search(text):
             breakdown["반말유지"] = 0
             score -= 20
 
-        # 2. AI스러운 표현, 시스템 언급 검사
         if AI_KEYWORDS_RE.search(text):
             breakdown["AI표현배제"] = 0
             score -= 20
 
-        # 3. 릴파 말투/텐션 적용 여부
         lilpa_keywords = ["왐마", "진짜루", "돌멩", "혼난다", "어떡해", "대박", "ㅋㅋ", "ㅎㅎ", "우와"]
         hits = sum(1 for kw in lilpa_keywords if kw in text)
         if hits == 0:
             breakdown["말버릇"] = 0
             score -= 15
-        elif hits > 5: # 같은 말버릇 연속/도배 방지 감점
+        elif hits > 5:
             breakdown["말버릇"] = 5
             score -= 10
 
-        # 4. 이모지 여부 (유니코드 이모지 금지)
         if EMOJI_RE.search(text):
             breakdown["이모지금지"] = 0
             score -= 15
 
-        # 5. 반복 표현 검사 (ㅋㅋ 제외한 무의미한 문자 반복)
         if REPETITION_RE.search(text.replace("ㅋ", "").replace("ㅎ", "").replace("ㅠ", "")):
             breakdown["반복표현"] = 0
             score -= 10
 
-        # 6. 문장 길이 검사 (너무 길면 감점)
         if len(text) > 400 or len(text) < 2:
             breakdown["문장길이"] = 0
             score -= 10
@@ -342,24 +333,20 @@ class SpamGuard:
         async with self.lock:
             now = time.time()
             
-            # 쿨다운 체크
             if user_id in self.cooldowns and self.cooldowns[user_id] > now:
                 return True
 
             history = self.user_history[user_id]
             
-            # 1. 초당 메시지 수 (3초 내 4개 이상)
             recent_msgs = [t for t, _ in history if now - t < 3.0]
             if len(recent_msgs) >= 3:
-                self.cooldowns[user_id] = now + 10.0 # 스팸 쿨다운 10초
+                self.cooldowns[user_id] = now + 10.0
                 return True
                 
-            # 2. 의미 없는 긴 도배 및 문자 반복
             if len(text) > 1000 or REPETITION_RE.search(text.replace("ㅋ", "")):
                 self.cooldowns[user_id] = now + 15.0
                 return True
                 
-            # 3. 복사 붙여넣기 반복 (최근 5개 중 동일 메시지 3개 이상)
             exact_duplicates = [m for _, m in history if m == text]
             if len(exact_duplicates) >= 2:
                 self.cooldowns[user_id] = now + 20.0
@@ -381,26 +368,21 @@ class UltimateLilpaNexus(discord.Client):
         self.cache_system = ResponseCacheSystem(self.cfg.CACHE_TTL)
         self.spam_guard = SpamGuard()
         
-        # Conversation Memory (단기 History + 장기 Summary)
         self.channel_history = defaultdict(lambda: deque(maxlen=self.cfg.MAX_HISTORY))
         self.longterm_summary = defaultdict(str)
         self.summary_locks = defaultdict(asyncio.Lock)
         
-        # Message Queue & Smart Batch Queue
         self.batch_queues: Dict[int, List[discord.Message]] = defaultdict(list)
         self.batch_tasks: Dict[int, asyncio.Task] = {}
         
-        # Connection Pool
         self.global_session: Optional[aiohttp.ClientSession] = None
 
     async def setup_hook(self):
-        # Session 재사용 및 Connection Pool 최적화
         connector = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300, keepalive_timeout=60)
         self.global_session = aiohttp.ClientSession(connector=connector)
         logger.info("Lilpa Nexus System Boot Sequence Completed.", extra={"metric_data": {"status": "ONLINE"}})
 
     async def extract_background_summary(self, channel_id: int, popped_turns: List[str]):
-        """장기 요약 메모리 갱신용 백그라운드 태스크"""
         async with self.summary_locks[channel_id]:
             current_summary = self.longterm_summary[channel_id]
             target_key = await self.health_manager.get_optimal_key()
@@ -445,21 +427,18 @@ class UltimateLilpaNexus(discord.Client):
             return 500, "", time.time() - start_time, str(e)
 
     async def generate_response(self, channel_id: int, user_query: str) -> str:
-        # 1. Response Cache 확인
         cached = await self.cache_system.get(user_query)
         if cached:
             self.metrics.cache_hit += 1
             return cached
         self.metrics.cache_miss += 1
 
-        # 2. Memory/RAG 조회
         rag_context = await self.rag_engine.retrieve_context(user_query)
         summary = self.longterm_summary[channel_id]
         
         system_instruction = LILPA_ULTIMATE_IDENTITY.format(summary_memory=summary, rag_context=rag_context)
         history_str = "\n".join(self.channel_history[channel_id])
         
-        # Prompt Injection 방어 검사 로깅 (최종 방어는 시스템 프롬프트가 담당)
         injection_warning = ""
         if any(regex.search(user_query) for regex in [BASE64_RE, HEX_RE, UNICODE_ESCAPE_RE, INJECTION_KEYWORDS_RE, ROT13_HEURISTIC_RE]):
             logger.warning("Prompt Injection Bypass Attempt Detected.", extra={"metric_data": {"query_sample": user_query[:30]}})
@@ -469,7 +448,6 @@ class UltimateLilpaNexus(discord.Client):
         reinforce_prompt = ""
         final_answer = ""
 
-        # 3. Retry + Exponential Backoff & Fallback Model & Auto Regeneration
         for attempt in range(1, self.cfg.MAX_REGEN_ATTEMPTS + 1):
             target_key = await self.health_manager.get_optimal_key()
             current_model = self.cfg.MODEL_FALLBACK if attempt == self.cfg.MAX_REGEN_ATTEMPTS else random.choice(self.cfg.MODELS_MAIN)
@@ -484,7 +462,6 @@ class UltimateLilpaNexus(discord.Client):
                 self.metrics.key_stats[target_key]["success"] += 1
                 self.metrics.key_stats[target_key]["latency"] += latency
 
-                # Character Validator & Score 2.0
                 score, breakdown = CharacterEvaluator20.evaluate(raw_text)
                 self.metrics.total_char_score += score
                 self.metrics.score_eval_count += 1
@@ -503,12 +480,11 @@ class UltimateLilpaNexus(discord.Client):
                 self.metrics.retry_count += 1
                 self.metrics.key_stats[target_key]["fail"] += 1
                 await self.health_manager.report_status(target_key, False, latency, status_code=status, error_type=err_type)
-                await asyncio.sleep(0.5 * (2 ** attempt)) # Exponential Backoff
+                await asyncio.sleep(0.5 * (2 ** attempt))
 
         if not final_answer:
             final_answer = "왐마야.. 진짜루 미안! 내가 지금 마이크 세팅이 꼬였나봐 ㅠㅠ 다시 한 번만 말해줄래 돌멩아?"
 
-        # 4. State Update (Cache & Memory)
         await self.cache_system.set(user_query, final_answer)
         
         hist_queue = self.channel_history[channel_id]
@@ -522,7 +498,6 @@ class UltimateLilpaNexus(discord.Client):
         return final_answer
 
     async def process_batch_queue(self, channel_id: int):
-        """Smart Batch Queue & Message Split & Typing Delay 처리"""
         await asyncio.sleep(self.cfg.BATCH_DEBOUNCE_TIME)
         
         messages = self.batch_queues[channel_id]
@@ -540,11 +515,9 @@ class UltimateLilpaNexus(discord.Client):
         async with target_message.channel.typing():
             response_text = await self.generate_response(channel_id, combined_text)
             
-            # Typing Delay (답변 길이에 따라 사람처럼 입력 지연 모사)
             typing_duration = min(4.0, max(1.0, len(response_text) * 0.02))
             await asyncio.sleep(typing_duration)
 
-            # 장문 메시지 분할 전송 (Discord 2000자 제한 방어)
             chunk_size = 1900
             for i in range(0, len(response_text), chunk_size):
                 chunk = response_text[i:i+chunk_size]
@@ -562,7 +535,6 @@ class UltimateLilpaNexus(discord.Client):
         if not (is_mentioned or is_dm):
             return
 
-        # Spam Detection & Cooldown
         if await self.spam_guard.check_spam(message.author.id, message.content):
             self.metrics.spam_blocked += 1
             try:
@@ -571,7 +543,6 @@ class UltimateLilpaNexus(discord.Client):
                 pass
             return
 
-        # Batch Queue 적재
         channel_id = message.channel.id
         self.batch_queues[channel_id].append(message)
         
@@ -579,7 +550,6 @@ class UltimateLilpaNexus(discord.Client):
             self.batch_tasks[channel_id] = asyncio.create_task(self.process_batch_queue(channel_id))
 
     async def close(self):
-        """Graceful Shutdown"""
         logger.info("Initiating Graceful Shutdown...")
         
         pending_tasks = [t for t in self.batch_tasks.values() if not t.done()]
@@ -593,15 +563,19 @@ class UltimateLilpaNexus(discord.Client):
         await super().close()
 
 # ==============================================================================
-# 10. 봇 실행 엔트리포인트
+# 10. 봇 실행 엔트리포인트 (load_dotenv 명시적 호출 추가)
 # ==============================================================================
 if __name__ == "__main__":
+    # 로컬 환경의 .env 파일을 스캔하여 환경 변수로 밀어 넣어 줍니다.
+    load_dotenv()
+    
+    # 그 후 인스턴스를 생성해야 HyperConfig 내부의 os.getenv가 정상 처리됩니다.
     bot = UltimateLilpaNexus()
     try:
         if bot.cfg.TOKEN == "YOUR_DISCORD_TOKEN_HERE" or not bot.cfg.API_KEYS:
             logger.error("Discord Token or Gemini API Keys are not properly set in environment variables.")
         else:
-            bot.run(bot.cfg.TOKEN, log_handler=None) # discord.py 기본 로거 대신 커스텀 JSON 로거 사용
+            bot.run(bot.cfg.TOKEN, log_handler=None)
     except KeyboardInterrupt:
         logger.info("Keyboard Interrupt detected. Shutting down.")
     finally:
