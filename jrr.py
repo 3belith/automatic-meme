@@ -27,7 +27,7 @@ GEMINI_MODELS = [m for m in (PRIMARY_MODEL, FALLBACK_MODEL) if m]
 
 RETRY_COUNT = int(os.getenv("LILPA_RETRY_COUNT", "2"))
 RETRY_DELAY = float(os.getenv("LILPA_RETRY_DELAY", "1.2"))
-HISTORY_LIMIT = int(os.getenv("LILPA_HISTORY_LIMIT", "10"))
+HISTORY_LIMIT = int(os.getenv("LILPA_HISTORY_LIMIT", "4"))
 
 # 배치 응답
 BATCH_WAIT_SECONDS = float(os.getenv("LILPA_BATCH_WAIT_SECONDS", "2.5"))
