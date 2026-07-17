@@ -144,7 +144,7 @@ class HyperConfig:
     MODEL_FALLBACK: str = "gemini-2.5-pro"
     
     MAX_HISTORY: int = 12
-    SCORE_THRESHOLD: int = 80
+    SCORE_THRESHOLD: int = 60
     MAX_REGEN_ATTEMPTS: int = 3
     CACHE_TTL: float = 60.0
     BATCH_DEBOUNCE_TIME: float = 1.5
